@@ -1,0 +1,3878 @@
+<script>
+  if (window.__DEGRAM_BOOT) window.__DEGRAM_BOOT.ok = true;
+  let currentRetry = 0;
+  const MAX_RETRIES = 3;
+  const PRO_FALLBACK_MAX = 1; // flash / flash-lite only: after 3 fails, 1 last rescue with pro
+  let proFallbackUsed = 0;
+  let repairHistory = []; // [{attempt, model, error, code}]
+
+  // History
+  let pendingHistorySave = false;
+
+  // Interactive Edits (SVG -> Mermaid)
+  var interactiveEdits = {
+    nodeLabels: Object.create(null),
+  };
+  var flowEdgeEdits = {
+    addMode: false,
+    from: null,
+  };
+
+  function syncFlowOnlyControls(codeOverride) {
+    const codeEl = document.getElementById("mermaidCode");
+    const code =
+      typeof codeOverride === "string"
+        ? codeOverride
+        : codeEl
+        ? codeEl.value || ""
+        : "";
+    const isFlow =
+      typeof isFlowchartLike === "function" ? isFlowchartLike(code) : false;
+
+    document.querySelectorAll("[data-flow-only]").forEach((el) => {
+      el.classList.toggle("hidden", !isFlow);
+    });
+
+    if (!isFlow) {
+      if (flowEdgeEdits && flowEdgeEdits.addMode) {
+        flowEdgeEdits.addMode = false;
+        flowEdgeEdits.from = null;
+        const btn = document.getElementById("edgeModeBtn");
+        if (btn) btn.setAttribute("aria-pressed", "false");
+      }
+
+      const paletteModal = document.getElementById("paletteModal");
+      if (
+        paletteModal &&
+        !paletteModal.classList.contains("hidden") &&
+        typeof closePalette === "function"
+      )
+        closePalette();
+    }
+  }
+
+  let textEditResolve = null;
+  function promptTextAsync(opts) {
+    const modal = document.getElementById("textEditModal");
+    const titleEl = document.getElementById("textEditTitle");
+    const inputEl = document.getElementById("textEditInput");
+    const hintEl = document.getElementById("textEditHint");
+    if (!modal || !titleEl || !inputEl || !hintEl) return Promise.resolve(null);
+
+    const o = opts && typeof opts === "object" ? opts : {};
+    titleEl.textContent = String(o.title || "Edit");
+    inputEl.value = String(o.value || "");
+    inputEl.placeholder = String(o.placeholder || "");
+    hintEl.textContent = String(o.hint || "");
+
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    window.setTimeout(() => inputEl.focus(), 0);
+
+    return new Promise((resolve) => {
+      if (typeof textEditResolve === "function") {
+        try {
+          textEditResolve(null);
+        } catch (e) {}
+      }
+      textEditResolve = resolve;
+    });
+  }
+  function resolveTextEdit(value) {
+    const modal = document.getElementById("textEditModal");
+    const inputEl = document.getElementById("textEditInput");
+    if (!modal || !inputEl) return;
+    const v = value === "__SUBMIT__" ? inputEl.value : value;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    const resolve = textEditResolve;
+    textEditResolve = null;
+    if (typeof resolve === "function") resolve(v == null ? null : String(v));
+  }
+
+  // --- Image prompt (Gemini image generation) ---
+  const IMAGE_STYLE_MODULES = {
+    business: {
+      name: "スタンダード・ビジネス",
+      prompt:
+        "Professional corporate tech infographic. Modern flat vector design with subtle shadows (Material Design). Clean white background, Royal Blue (#4285F4) accents. High readability, generous whitespace, balanced grid layout. Geometric nodes.",
+    },
+    manga: {
+      name: "日本の漫画・劇画風",
+      prompt:
+        "Japanese manga style illustration. Black-and-white ink with screentones, strong contrast. Dynamic composition with panels and speed lines. Use speech bubbles ONLY for the main title. No small text.",
+    },
+    whiteboard: {
+      name: "手書きホワイトボード",
+      prompt:
+        "Hand-drawn whiteboard sketch. Rough marker strokes, imperfect boxes, organic layout (Excalidraw style). Whiteboard background with black/blue/red marker ink. Casual brainstorming vibe.",
+    },
+    clay: {
+      name: "クレイモーフィズム (3D)",
+      prompt:
+        "Cute 3D claymorphism infographic. Soft rounded clay-like objects, gentle lighting, soft shadows. Pastel palette (soft blue/pink/mint) on light background. Nodes look like tangible 3D buttons.",
+    },
+    cyberpunk: {
+      name: "サイバーパンク",
+      prompt:
+        "Dark mode cyberpunk futuristic infographic. Deep navy/black background with glowing neon cyan/magenta lines. Holographic icons, subtle scanline effects. High-tech, sleek interface.",
+    },
+    minimal_mono: {
+      name: "ミニマル・モノクロ",
+      prompt:
+        "Minimalist monochrome wireframe diagram. Thin black lines on pure white background. No shading, no gradients. Architecturally clean, swiss design typography style. Ultra-simple icons.",
+    },
+    isometric: {
+      name: "アイソメトリック (2.5D)",
+      prompt:
+        "2.5D Isometric system diagram. Orthographic projection (30-degree angle). Floating platforms, servers, and blocks connected by piping or data streams. Tech blue and glass textures. Structural and organized.",
+    },
+    blueprint: {
+      name: "設計図・青写真",
+      prompt:
+        "Technical blueprint style. White lines on a classic blue grid paper background. Engineering aesthetic, precise measurements, schematic icons. Looks like an architectural plan.",
+    },
+    paper_cutout: {
+      name: "切り絵・ペーパークラフト",
+      prompt:
+        "Layered paper cutout art style. Elements look like stacked colored paper with drop shadows creating depth. Vibrant but soft colors. Texture of construction paper. Whimsical and crafty.",
+    },
+  };
+
+  const IMAGE_STYLE_NEGATIVES = {
+    business: "No hand-drawn style. No manga. No neon cyberpunk. No 3D clay.",
+    manga:
+      "No color. Monochrome only. No photorealism. No characters, no faces, no product photos, no cinematic scenes. No comic sound effects unless they appear verbatim in the Mermaid labels. No advertisement/poster composition.",
+    whiteboard: "No clean perfect vector. No glossy 3D. No photorealism.",
+    clay: "No flat 2D vector. No sharp edges. No photorealism.",
+    cyberpunk: "No bright white background. No pastel cute style.",
+    minimal_mono: "No shading. No gradients. No 3D. No color.",
+    isometric: "No front-facing flat 2D. No hand-drawn style.",
+    blueprint: "No colorful palette. No hand-drawn doodles. No 3D clay.",
+    paper_cutout: "No photorealistic paper. No flat wireframe only.",
+  };
+
+  let imagePromptResolve = null;
+  function promptImagePromptSettingsAsync() {
+    const modal = document.getElementById("imagePromptModal");
+    const langEl = document.getElementById("imageLangSelect");
+    const selectEl = document.getElementById("imageStyleSelect");
+    const customEl = document.getElementById("imageStyleCustomInput");
+    const negEl = document.getElementById("imageNegativesInput");
+    if (!modal || !langEl || !selectEl || !customEl || !negEl)
+      return Promise.resolve(null);
+
+    if (!selectEl.__degramPopulated) {
+      for (const [id, v] of Object.entries(IMAGE_STYLE_MODULES)) {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = `${id} - ${v.name}`;
+        selectEl.appendChild(opt);
+      }
+      selectEl.__degramPopulated = true;
+    }
+
+    const savedStyle =
+      localStorage.getItem("diagram.imagePrompt.styleId") || "business";
+    selectEl.value = IMAGE_STYLE_MODULES[savedStyle] ? savedStyle : "business";
+    const savedLang =
+      localStorage.getItem("diagram.imagePrompt.lang") || "auto";
+    langEl.value =
+      savedLang === "ja" || savedLang === "en" || savedLang === "auto"
+        ? savedLang
+        : "auto";
+    customEl.value =
+      localStorage.getItem("diagram.imagePrompt.custom." + selectEl.value) ||
+      "";
+    negEl.value = localStorage.getItem("diagram.imagePrompt.negatives") || "";
+
+    selectEl.onchange = () => {
+      try {
+        localStorage.setItem("diagram.imagePrompt.styleId", selectEl.value);
+        customEl.value =
+          localStorage.getItem(
+            "diagram.imagePrompt.custom." + selectEl.value
+          ) || "";
+      } catch (e) {}
+    };
+
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    window.setTimeout(() => (langEl || selectEl).focus(), 0);
+
+    return new Promise((resolve) => {
+      if (typeof imagePromptResolve === "function") {
+        try {
+          imagePromptResolve(null);
+        } catch (e) {}
+      }
+      imagePromptResolve = resolve;
+    });
+  }
+
+  function resolveImagePrompt(value) {
+    const modal = document.getElementById("imagePromptModal");
+    const langEl = document.getElementById("imageLangSelect");
+    const selectEl = document.getElementById("imageStyleSelect");
+    const customEl = document.getElementById("imageStyleCustomInput");
+    const negEl = document.getElementById("imageNegativesInput");
+    if (!modal || !langEl || !selectEl || !customEl || !negEl) return;
+
+    const isSubmit = value === "__SUBMIT__";
+    const payload = isSubmit
+      ? {
+          lang: String(langEl.value || "auto"),
+          styleId: String(selectEl.value || "business"),
+          styleCustom: String(customEl.value || ""),
+          extraNegatives: String(negEl.value || ""),
+        }
+      : null;
+
+    if (isSubmit) {
+      try {
+        localStorage.setItem("diagram.imagePrompt.lang", payload.lang);
+        localStorage.setItem("diagram.imagePrompt.styleId", payload.styleId);
+        localStorage.setItem(
+          "diagram.imagePrompt.custom." + payload.styleId,
+          payload.styleCustom
+        );
+        localStorage.setItem(
+          "diagram.imagePrompt.negatives",
+          payload.extraNegatives
+        );
+      } catch (e) {}
+    }
+
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    const resolve = imagePromptResolve;
+    imagePromptResolve = null;
+    if (typeof resolve === "function") resolve(payload);
+  }
+  function sanitizeInlineLabel(text) {
+    let s = String(text == null ? "" : text);
+    s = s.replace(/\uFEFF/g, "");
+    s = s.replace(/\r/g, "");
+    s = s.replace(/\n+/g, " ");
+    s = s.replace(/\s+/g, " ").trim();
+    s = s.replace(/\[/g, "［").replace(/\]/g, "］");
+    s = s.replace(/</g, "＜").replace(/>/g, "＞");
+    s = s.replace(/\\+\"/g, "'");
+    s = s.replace(/"/g, "'");
+    s = s.replace(/'/g, "’");
+    if (s.length > 240) s = s.slice(0, 240);
+    return s;
+  }
+  function escapeRegex(str) {
+    return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function getFlowchartNodeId(node) {
+    if (!node) return "";
+    const dataId = node.getAttribute && node.getAttribute("data-id");
+    if (dataId) return String(dataId).trim();
+    const idAttr = node.getAttribute ? node.getAttribute("id") || "" : "";
+    if (idAttr) {
+      const parts = String(idAttr).split(/[-_]/).filter(Boolean);
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const p = parts[i];
+        if (/^\d+$/.test(p)) continue;
+        if (/^(flowchart|graph|node)$/i.test(p)) continue;
+        if (/^[A-Za-z0-9_]+$/.test(p)) return p;
+      }
+    }
+    const titleEl = node.querySelector ? node.querySelector("title") : null;
+    const t =
+      titleEl && titleEl.textContent ? String(titleEl.textContent).trim() : "";
+    return /^[A-Za-z0-9_]+$/.test(t) ? t : "";
+  }
+  function toggleEdgeMode(force) {
+    const next = typeof force === "boolean" ? force : !flowEdgeEdits.addMode;
+    flowEdgeEdits.addMode = next;
+    if (!next) flowEdgeEdits.from = null;
+    const btn = document.getElementById("edgeModeBtn");
+    if (btn) btn.setAttribute("aria-pressed", next ? "true" : "false");
+    showToast(
+      "info",
+      next ? "エッジ追加モード：ノードを2つ選択" : "エッジ追加モード：OFF",
+      { timeoutMs: 1800 }
+    );
+  }
+  function upsertFlowchartEdge(code, from, to, label) {
+    const f = String(from || "").trim();
+    const t = String(to || "").trim();
+    if (!f || !t) return code;
+    const lbl = sanitizeInlineLabel(label || "");
+    const newLine = lbl
+      ? f + " -->|" + lbl.replace(/\|/g, " ") + "| " + t
+      : f + " --> " + t;
+
+    const lines = String(code || "").split(/\r?\n/);
+    const re = new RegExp(
+      "^\\s*" +
+        escapeRegex(f) +
+        "\\s*(?:--+>|--+|==+>)\\s*(?:\\|[^|]*\\|\\s*)?" +
+        escapeRegex(t) +
+        "(?:\\s|$)"
+    );
+    for (let i = 0; i < lines.length; i++) {
+      if (re.test(lines[i])) {
+        lines[i] = newLine;
+        return lines.join("\n");
+      }
+    }
+    lines.push(newLine);
+    return lines.join("\n");
+  }
+  function getFlowchartEdgeEndpointsFromSvg(el) {
+    if (!el || !el.closest) return null;
+    const edgeGroup = el.closest("g.edgePath") || el.closest("g.edgeLabel");
+    if (!edgeGroup) return null;
+    const titleEl = edgeGroup.querySelector
+      ? edgeGroup.querySelector("title")
+      : null;
+    const title =
+      titleEl && titleEl.textContent ? String(titleEl.textContent).trim() : "";
+    const m1 = title.match(
+      /\b([A-Za-z0-9_]+)\b\s*[-.]*-+>?\s*\b([A-Za-z0-9_]+)\b/
+    );
+    if (m1) return { from: m1[1], to: m1[2] };
+    const path = edgeGroup.querySelector
+      ? edgeGroup.querySelector("path")
+      : null;
+    const pid = path && path.getAttribute ? path.getAttribute("id") || "" : "";
+    if (pid && (pid.startsWith("L-") || pid.startsWith("L_"))) {
+      const parts = pid.replace(/^L[-_]/, "").split(/[-_]/);
+      if (parts.length >= 2) return { from: parts[0], to: parts[1] };
+    }
+    return null;
+  }
+
+  // File Upload Variable
+  let currentFile = null; // { mimeType, data, filename }
+
+  // Pan & Zoom
+  let scale = 1;
+  let pointX = 0;
+  let pointY = 0;
+  let isPanning = false;
+  let startX = 0;
+  let startY = 0;
+  let initialPinchDistance = null;
+  let lastScale = 1;
+  let pinchWorldX = 0;
+  let pinchWorldY = 0;
+  const MIN_SCALE = 0.2;
+  const MAX_SCALE = 6;
+
+  // --- App State (empty → ready → generating → success / error) ---
+  const APP_STATE = Object.freeze({
+    empty: "empty",
+    ready: "ready",
+    generating: "generating",
+    success: "success",
+    error: "error",
+  });
+  let appState = APP_STATE.empty;
+
+  function isPanelOpenForLayout(panelEl, desktop) {
+    if (!panelEl) return false;
+    if (
+      panelEl.classList.contains("opacity-0") ||
+      panelEl.classList.contains("pointer-events-none")
+    )
+      return false;
+    const style = getComputedStyle(panelEl);
+    if (desktop) return (parseFloat(style.width) || 0) > 8;
+    const transform = style.transform || "";
+    if (!transform || transform === "none") return true;
+    const m = transform.match(/^matrix\(([^)]+)\)$/);
+    if (m) {
+      const parts = m[1].split(",").map((v) => parseFloat(v.trim()));
+      const tx = parts.length >= 6 ? parts[4] : 0;
+      return !(Number.isFinite(tx) && tx < -1);
+    }
+    return true;
+  }
+
+  function updateFloatingDockVisibility(forceEmptyStateVisible) {
+    const dock = document.getElementById("floatingDock");
+    if (!dock) return;
+    const isDesktop = window.innerWidth >= 768;
+    const panel = document.getElementById("sidePanel");
+    const panelOpen = isPanelOpenForLayout(panel, isDesktop);
+    const output = document.getElementById("diagram-output");
+    const noDiagram = !output || output.classList.contains("opacity-0");
+    const emptyVisible =
+      typeof forceEmptyStateVisible === "boolean"
+        ? forceEmptyStateVisible
+        : appState === APP_STATE.empty && noDiagram;
+    const hide = emptyVisible || (!isDesktop && panelOpen);
+    dock.classList.toggle("hidden", hide);
+  }
+
+  function getIsReady() {
+    const input =
+      document.getElementById("userInput") &&
+      document.getElementById("userInput").value
+        ? document.getElementById("userInput").value.trim()
+        : "";
+    return !!input || !!currentFile;
+  }
+  function setFormDisabled(disabled) {
+    const els = [
+      document.getElementById("userInput"),
+      document.getElementById("diagramTypeSelect"),
+      document.getElementById("fileInput"),
+      document.getElementById("fileAttachBtn"),
+      document.getElementById("generateBtn"),
+      document.getElementById("mermaidCode"),
+    ].filter(Boolean);
+    els.forEach((el) => {
+      if (el.id === "generateBtn") return;
+      el.disabled = !!disabled;
+    });
+    document.querySelectorAll("[data-side-tab]").forEach((btn) => {
+      btn.disabled = !!disabled;
+    });
+  }
+  function flashGenerateBtn(kind) {
+    const btn = document.getElementById("generateBtn");
+    if (!btn) return;
+    const cls = kind === "success" ? "btn-flash-success" : "btn-flash-error";
+    btn.classList.remove("btn-flash-success", "btn-flash-error");
+    btn.classList.add(cls);
+    window.setTimeout(() => btn.classList.remove(cls), 720);
+  }
+  function syncGenerateButton() {
+    const btn = document.getElementById("generateBtn");
+    if (!btn) return;
+    const spinner = document.getElementById("generateSpinner");
+    const icon = document.getElementById("generateIcon");
+    const text = document.getElementById("generateText");
+    const labelGenerate = typeof t === "function" ? t("generate") : "Generate";
+    const labelThinking =
+      typeof t === "function" ? t("thinking") : "Thinking...";
+    const labelPromptNeeded =
+      typeof t === "function" ? t("promptNeeded") : "Enter a prompt";
+
+    if (appState === APP_STATE.generating) {
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      if (spinner) spinner.classList.remove("hidden");
+      if (icon) icon.classList.add("hidden");
+      if (text) text.textContent = labelThinking;
+      btn.title = "";
+      return;
+    }
+
+    btn.setAttribute("aria-busy", "false");
+    if (spinner) spinner.classList.add("hidden");
+    if (icon) icon.classList.remove("hidden");
+
+    const ready = getIsReady();
+    btn.disabled = !ready;
+    if (!ready) {
+      if (text) text.textContent = labelGenerate;
+      btn.title = labelPromptNeeded;
+    } else {
+      btn.title = "";
+      if (text) text.textContent = labelGenerate;
+    }
+  }
+  function syncEmptyStateCard() {
+    const card = document.getElementById("emptyStateCard");
+    if (!card) return;
+    const output = document.getElementById("diagram-output");
+    const noDiagram = !output || output.classList.contains("opacity-0");
+    const show = appState === APP_STATE.empty && noDiagram;
+    card.classList.toggle("hidden", !show);
+    updateFloatingDockVisibility(show);
+  }
+  function setAppState(next, payload) {
+    const allowed = new Set(Object.values(APP_STATE));
+    const target = allowed.has(next) ? next : APP_STATE.ready;
+    appState = target;
+    setFormDisabled(target === APP_STATE.generating);
+    syncGenerateButton();
+    syncEmptyStateCard();
+    if (target === APP_STATE.success) {
+      flashGenerateBtn("success");
+      showToast(
+        "success",
+        payload && payload.message
+          ? payload.message
+          : typeof t === "function"
+          ? t("generated")
+          : "Generated"
+      );
+      window.setTimeout(() => {
+        if (appState === APP_STATE.success)
+          setAppState(getIsReady() ? APP_STATE.ready : APP_STATE.empty);
+      }, 650);
+    }
+    if (target === APP_STATE.error) {
+      flashGenerateBtn("error");
+      if (payload && payload.message) {
+        if (payload.sticky) showCanvasError(payload.message);
+        else showToast("error", payload.message);
+      }
+      window.setTimeout(() => {
+        if (appState === APP_STATE.error)
+          setAppState(getIsReady() ? APP_STATE.ready : APP_STATE.empty);
+      }, 650);
+    }
+  }
+  function syncAppStateFromInputs() {
+    if (appState === APP_STATE.generating) return;
+    setAppState(getIsReady() ? APP_STATE.ready : APP_STATE.empty);
+  }
+
+  window.onload = function () {
+    if (typeof mermaid !== "undefined") {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "loose",
+        theme: "dark",
+      });
+    } else {
+      showToast("error", "ライブラリの読み込みに失敗しました。");
+    }
+    setupPanZoom();
+    setupPanelResize();
+    loadUiPrefs();
+    changeTheme();
+    handleResize();
+    refreshHistory();
+    syncAppStateFromInputs();
+    updateFloatingDockVisibility();
+
+    const inputEl = document.getElementById("userInput");
+    if (inputEl)
+      inputEl.addEventListener("input", () => syncAppStateFromInputs());
+
+    const codeEl = document.getElementById("mermaidCode");
+    if (codeEl)
+      codeEl.addEventListener("input", () =>
+        syncFlowOnlyControls(codeEl.value || "")
+      );
+
+    if (typeEl)
+      typeEl.addEventListener("change", () => updateAdvancedSummary());
+
+    document.addEventListener("keydown", (e) => {
+      if (!e) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        const editModal = document.getElementById("textEditModal");
+        if (editModal && !editModal.classList.contains("hidden")) {
+          e.preventDefault();
+          resolveTextEdit("__SUBMIT__");
+          return;
+        }
+        e.preventDefault();
+        if (appState !== APP_STATE.generating) startGeneration();
+      }
+      if (e.key === "Escape") {
+        closeDownloadMenu();
+        if (
+          document.getElementById("typeHelpModal") &&
+          !document.getElementById("typeHelpModal").classList.contains("hidden")
+        )
+          closeTypeHelp();
+        if (
+          document.getElementById("paletteModal") &&
+          !document.getElementById("paletteModal").classList.contains("hidden")
+        )
+          closePalette();
+        if (
+          document.getElementById("settingsModal") &&
+          !document.getElementById("settingsModal").classList.contains("hidden")
+        )
+          closeSettings();
+        if (
+          document.getElementById("confirmModal") &&
+          !document.getElementById("confirmModal").classList.contains("hidden")
+        )
+          resolveConfirm(false);
+        if (
+          document.getElementById("textEditModal") &&
+          !document.getElementById("textEditModal").classList.contains("hidden")
+        )
+          resolveTextEdit(null);
+        togglePanel(false);
+      }
+    });
+
+    syncFlowOnlyControls();
+  };
+
+  // --- File Handling Functions ---
+  function handleFileSelect(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    // Size check (10MB warning for GAS payload safety)
+    if (file.size > 10 * 1024 * 1024) {
+      showToast(
+        "info",
+        "ファイルサイズが大きすぎます (10MB以下推奨)。GASの制限によりエラーになる可能性があります。",
+        { timeoutMs: 5200 }
+      );
+      // 続行は許可するが警告
+    }
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      // e.target.result look like: "data:image/png;base64,....."
+      const base64String = e.target.result;
+      const delimiterIndex = base64String.indexOf(",");
+      const contentType = base64String
+        .substring(5, delimiterIndex)
+        .replace(";base64", "");
+      const rawBase64 = base64String.substring(delimiterIndex + 1);
+
+      currentFile = {
+        mimeType: contentType,
+        data: rawBase64,
+        filename: file.name,
+      };
+
+      updateFileUI();
+      syncAppStateFromInputs();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearFile() {
+    currentFile = null;
+    document.getElementById("fileInput").value = "";
+    updateFileUI();
+    syncAppStateFromInputs();
+  }
+
+  function updateFileUI() {
+    const chip = document.getElementById("fileChip");
+    const nameDisplay = document.getElementById("fileNameDisplay");
+
+    if (currentFile) {
+      nameDisplay.textContent = currentFile.filename;
+      chip.classList.remove("hidden");
+    } else {
+      chip.classList.add("hidden");
+    }
+  }
+
+  function clearPrompt() {
+    document.getElementById("userInput").value = "";
+    syncAppStateFromInputs();
+  }
+
+  function clearCode() {
+    document.getElementById("mermaidCode").value = "";
+    const outputDiv = document.getElementById("diagram-output");
+    outputDiv.innerHTML = "";
+    outputDiv.classList.add("opacity-0");
+    clearCanvasError();
+    resetZoom();
+    syncAppStateFromInputs();
+  }
+
+  function newDiagram() {
+    clearPrompt();
+    clearFile();
+    clearCode();
+  }
+
+  // --- UI Prefs ---
+  const PANEL_WIDTH_KEY = "diagram.sidePanelWidth";
+  const LAYOUT_KEY = "diagram.layoutMode";
+  const DIAGRAM_THEME_KEY = "diagram.diagramTheme";
+  const UI_THEME_KEY = "diagram.uiTheme";
+  const UI_LANG_KEY = "diagram.uiLang";
+  const FONT_SIZE_KEY = "diagram.fontSize";
+  const PALETTE_NODE_KEY = "diagram.palette.node";
+  const PALETTE_EDGE_KEY = "diagram.palette.edge";
+  const SIDE_TAB_KEY = "diagram.sideTab";
+  function normalizeDiagramTheme(theme) {
+    const raw = (theme || "").toString().trim().toLowerCase();
+    if (raw === "default") return "default";
+    if (raw === "neutral" || raw === "monochrome") return "default";
+    if (raw === "forest" || raw === "wood") return "dark";
+    if (raw === "neon") return "dark";
+    if (raw === "dark") return "dark";
+    if (raw === "light") return "default";
+    return raw;
+  }
+  function getDiagramTheme() {
+    const raw = localStorage.getItem(DIAGRAM_THEME_KEY) || "dark";
+    const next = normalizeDiagramTheme(raw);
+    const allowed = new Set(["dark", "default"]);
+    return allowed.has(next) ? next : "dark";
+  }
+  function getStoredPanelWidth() {
+    const raw = localStorage.getItem(PANEL_WIDTH_KEY);
+    const parsed = raw ? Number(raw) : NaN;
+    const fallback = 340;
+    const value = Number.isFinite(parsed) ? parsed : fallback;
+    const min = 260;
+    const max = Math.max(min, Math.min(720, window.innerWidth - 220));
+    return Math.max(min, Math.min(max, value));
+  }
+  function setStoredPanelWidth(width) {
+    const clamped = Math.round(width);
+    localStorage.setItem(PANEL_WIDTH_KEY, String(clamped));
+  }
+  function getLayoutMode() {
+    const raw = localStorage.getItem(LAYOUT_KEY) || "td";
+    if (raw === "auto") return "td";
+    return raw === "lr" || raw === "td" ? raw : "td";
+  }
+  function setLayoutMode(mode) {
+    const next = mode === "lr" || mode === "td" ? mode : "td";
+    localStorage.setItem(LAYOUT_KEY, next);
+  }
+  function loadUiPrefs() {
+    const layout = getLayoutMode();
+    updateLayoutButtons(layout);
+
+    updateThemeChips(getDiagramTheme());
+
+    const uiTheme = localStorage.getItem(UI_THEME_KEY) || "dark";
+    setUiTheme(uiTheme === "light" ? "light" : "dark");
+    syncUiThemeButtons();
+
+    const lang = localStorage.getItem(UI_LANG_KEY) || "ja";
+    setLanguage(lang === "en" ? "en" : "ja");
+    syncLanguageButtons();
+
+    applyFontSize(getFontSize());
+    syncFontSizeButtons();
+
+    const node = localStorage.getItem(PALETTE_NODE_KEY) || "#60a5fa";
+    const edge = localStorage.getItem(PALETTE_EDGE_KEY) || "#94a3b8";
+    const nodeInput = document.getElementById("nodeColorInput");
+    const edgeInput = document.getElementById("edgeColorInput");
+    if (nodeInput) nodeInput.value = node;
+    if (edgeInput) edgeInput.value = edge;
+    renderPalettePresets();
+
+    setSideTab(localStorage.getItem(SIDE_TAB_KEY) || "create", {
+      store: false,
+    });
+    updateAdvancedSummary();
+  }
+
+  function getFontSize() {
+    const raw = (localStorage.getItem(FONT_SIZE_KEY) || "md").toString();
+    return raw === "sm" || raw === "md" || raw === "lg" ? raw : "md";
+  }
+  function applyFontSize(size) {
+    const next = size === "sm" || size === "lg" ? size : "md";
+    const px = next === "sm" ? 14 : next === "lg" ? 18 : 16;
+    document.documentElement.style.fontSize = String(px) + "px";
+    document.body.setAttribute("data-font-size", next);
+  }
+  function setFontSizeAndSync(size) {
+    const next = size === "sm" || size === "lg" ? size : "md";
+    localStorage.setItem(FONT_SIZE_KEY, next);
+    applyFontSize(next);
+    syncFontSizeButtons();
+  }
+  function syncFontSizeButtons() {
+    const current = getFontSize();
+    document.querySelectorAll("[data-font-size]").forEach((btn) => {
+      const active = btn.getAttribute("data-font-size") === current;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function updateAdvancedSummary() {
+    const typeEl = document.getElementById("diagramTypeSelect");
+    const out = document.getElementById("advancedSummaryText");
+    if (!typeEl || !out) return;
+    const typeText =
+      typeEl.options &&
+      typeEl.selectedIndex >= 0 &&
+      typeEl.options[typeEl.selectedIndex]
+        ? typeEl.options[typeEl.selectedIndex].textContent
+        : typeEl.value || "";
+    out.textContent = String(typeText || "Auto");
+  }
+
+  function setSideTab(tab, opts) {
+    const allowed = new Set(["create", "editor", "history"]);
+    const current = allowed.has(tab) ? tab : "create";
+    const store = !(opts && opts.store === false);
+    if (store) localStorage.setItem(SIDE_TAB_KEY, current);
+
+    document.querySelectorAll("[data-side-panel]").forEach((panel) => {
+      panel.classList.toggle(
+        "hidden",
+        panel.getAttribute("data-side-panel") !== current
+      );
+    });
+    document.querySelectorAll("[data-side-tab]").forEach((btn) => {
+      const active = btn.getAttribute("data-side-tab") === current;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+
+    if (current === "create") {
+      const input = document.getElementById("userInput");
+      if (input && window.innerWidth >= 768)
+        window.setTimeout(() => input.focus(), 0);
+    }
+    if (current === "editor") {
+      const code = document.getElementById("mermaidCode");
+      if (code && window.innerWidth >= 768)
+        window.setTimeout(() => code.focus(), 0);
+    }
+  }
+
+  function setDiagramThemeAndSync(theme) {
+    const allowed = new Set(["dark", "default"]);
+    const next = allowed.has(theme) ? theme : "dark";
+    localStorage.setItem(DIAGRAM_THEME_KEY, next);
+    updateThemeChips(next);
+    changeTheme();
+  }
+  function updateThemeChips(theme) {
+    const allowed = new Set(["dark", "default"]);
+    const normalized = normalizeDiagramTheme(theme);
+    const current = allowed.has(normalized) ? normalized : getDiagramTheme();
+    document.querySelectorAll("[data-diagram-theme]").forEach((btn) => {
+      const active = btn.getAttribute("data-diagram-theme") === current;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+  function updateLayoutButtons(mode) {
+    const current = mode === "lr" || mode === "td" ? mode : getLayoutMode();
+    const btn = document.getElementById("layoutToggleBtn");
+    const icon = document.getElementById("layoutToggleIcon");
+    if (!btn || !icon) return;
+    const isTd = current === "td";
+    icon.textContent = isTd ? "swap_vert" : "swap_horiz";
+    btn.title = isTd ? "レイアウト：縦" : "レイアウト：横";
+    btn.setAttribute("aria-label", btn.title);
+  }
+  function toggleLayoutAndRender() {
+    const current = getLayoutMode();
+    const next = current === "lr" ? "td" : "lr";
+    setLayoutMode(next);
+    updateLayoutButtons(next);
+    if (document.getElementById("mermaidCode").value) renderDiagram();
+  }
+  function setupPanelResize() {
+    const panel = document.getElementById("sidePanel");
+    const resizer = document.getElementById("panelResizer");
+    if (!panel || !resizer) return;
+
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    function onMove(e) {
+      if (!isResizing) return;
+      e.preventDefault();
+      const dx = e.clientX - startX;
+      const next = startWidth + dx;
+      const min = 260;
+      const max = Math.max(min, Math.min(720, window.innerWidth - 220));
+      const width = Math.max(min, Math.min(max, next));
+      panel.style.width = width + "px";
+      setStoredPanelWidth(width);
+    }
+    function onUp() {
+      if (!isResizing) return;
+      isResizing = false;
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+
+    resizer.addEventListener("mousedown", (e) => {
+      if (window.innerWidth < 768) return;
+      const isClosed =
+        panel.classList.contains("opacity-0") ||
+        parseFloat(getComputedStyle(panel).width) === 0;
+      if (isClosed) return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth =
+        parseFloat(getComputedStyle(panel).width) || getStoredPanelWidth();
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+  }
+
+  // --- Panel Logic ---
+  function syncPanelMenuState(menuBtn, menuIcon, isOpen) {
+    if (menuBtn)
+      menuBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    if (menuIcon) menuIcon.classList.toggle("-rotate-90", !!isOpen);
+  }
+
+  function setOpenPanelButtonVisible(openPanelBtn, visible) {
+    if (!openPanelBtn) return;
+    if (visible) {
+      openPanelBtn.classList.remove("hidden");
+      openPanelBtn.classList.add("flex");
+    } else {
+      openPanelBtn.classList.add("hidden");
+      openPanelBtn.classList.remove("flex");
+    }
+  }
+
+  function togglePanel(open) {
+    const panel = document.getElementById("sidePanel");
+    const btn = document.getElementById("openPanelBtn");
+    const menuBtn = document.getElementById("panelToggleBtn");
+    const menuIcon = document.getElementById("panelToggleIcon");
+    const floatingDock = document.getElementById("floatingDock");
+    const isDesktop = window.innerWidth >= 768;
+    const isCurrentlyOpen = isPanelOpenForLayout(panel, isDesktop);
+    const nextOpen = typeof open === "boolean" ? open : !isCurrentlyOpen;
+
+    if (nextOpen) {
+      panel.classList.remove("opacity-0", "pointer-events-none");
+      if (isDesktop) {
+        panel.classList.remove("fixed", "inset-0");
+        panel.style.height = "";
+        panel.style.transform = "";
+        panel.style.width = getStoredPanelWidth() + "px";
+      } else {
+        panel.classList.add("fixed", "inset-0");
+        panel.style.width = "";
+        panel.style.height = "100vh";
+        panel.style.transform = "translateX(0)";
+      }
+      setOpenPanelButtonVisible(btn, false);
+      syncPanelMenuState(menuBtn, menuIcon, true);
+    } else {
+      if (isDesktop) {
+        panel.classList.remove("fixed", "inset-0");
+        panel.style.height = "";
+        panel.style.transform = "";
+        panel.style.width = "0px";
+      } else {
+        panel.classList.add("fixed", "inset-0");
+        panel.style.width = "";
+        panel.style.height = "100vh";
+        panel.style.transform = "translateX(-100%)";
+      }
+      panel.classList.add("opacity-0", "pointer-events-none");
+      setOpenPanelButtonVisible(btn, isDesktop);
+      syncPanelMenuState(menuBtn, menuIcon, false);
+    }
+
+    updateFloatingDockVisibility();
+  }
+
+  function handleResize() {
+    const panel = document.getElementById("sidePanel");
+    const btn = document.getElementById("openPanelBtn");
+    const menuBtn = document.getElementById("panelToggleBtn");
+    const menuIcon = document.getElementById("panelToggleIcon");
+    const floatingDock = document.getElementById("floatingDock");
+    const isDesktop = window.innerWidth >= 768;
+    if (!panel) return;
+    if (!isDesktop) {
+      // Mobile: keep current open/close state (avoid closing on virtual keyboard resize).
+      const wantsOpen =
+        menuBtn && menuBtn.getAttribute("aria-expanded") === "true";
+      panel.classList.add("fixed", "inset-0");
+      panel.style.width = "";
+      panel.style.height = "100vh";
+      setOpenPanelButtonVisible(btn, false);
+      if (wantsOpen) {
+        panel.style.transform = "translateX(0)";
+        panel.classList.remove("opacity-0", "pointer-events-none");
+        syncPanelMenuState(menuBtn, menuIcon, true);
+      } else {
+        panel.style.transform = "translateX(-100%)";
+        panel.classList.add("opacity-0", "pointer-events-none");
+        syncPanelMenuState(menuBtn, menuIcon, false);
+      }
+      updateFloatingDockVisibility();
+      return;
+    }
+
+    panel.classList.remove("fixed", "inset-0");
+    panel.style.height = "";
+    panel.style.transform = "";
+    const style = getComputedStyle(panel);
+    const isOpen =
+      !panel.classList.contains("opacity-0") &&
+      !panel.classList.contains("pointer-events-none") &&
+      parseFloat(style.width) > 8;
+    if (isOpen) {
+      panel.style.width = getStoredPanelWidth() + "px";
+      panel.classList.remove("opacity-0", "pointer-events-none");
+      setOpenPanelButtonVisible(btn, false);
+    } else {
+      panel.style.width = "0px";
+      panel.classList.add("opacity-0", "pointer-events-none");
+      setOpenPanelButtonVisible(btn, true);
+    }
+    syncPanelMenuState(menuBtn, menuIcon, false);
+    // Auto layout removed; keep current direction on resize.
+    updateFloatingDockVisibility();
+  }
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(handleResize, 100);
+  });
+
+  // --- Toast / Confirm (no alert/confirm) ---
+  function showToast(kind, message, opts) {
+    const host = document.getElementById("toastHost");
+    if (!host) return;
+    const type =
+      kind === "success" || kind === "error" || kind === "info" ? kind : "info";
+    const icon =
+      type === "success" ? "check_circle" : type === "error" ? "error" : "info";
+    const timeout =
+      opts && Number.isFinite(opts.timeoutMs)
+        ? opts.timeoutMs
+        : type === "error"
+        ? 5200
+        : 3200;
+
+    const el = document.createElement("div");
+    el.className =
+      "toast toast-" +
+      type +
+      " ui-surface rounded-xl shadow-2xl px-3 py-2 flex items-start gap-2 pointer-events-auto";
+    el.innerHTML =
+      '<span class="material-symbols-outlined text-lg mt-0.5">' +
+      icon +
+      "</span>" +
+      '<div class="min-w-0 flex-1">' +
+      '<div class="text-xs font-bold tracking-wide">' +
+      (type === "success" ? "SUCCESS" : type === "error" ? "ERROR" : "INFO") +
+      "</div>" +
+      '<div class="text-sm ui-muted break-words leading-relaxed">' +
+      escapeHtml(String(message || "")) +
+      "</div>" +
+      "</div>" +
+      '<button type="button" class="canvas-glass canvas-control p-1 rounded-lg transition shadow" title="Close">' +
+      '<span class="material-symbols-outlined text-lg">close</span>' +
+      "</button>";
+
+    const closeBtn = el.querySelector("button");
+    if (closeBtn) closeBtn.addEventListener("click", () => el.remove());
+    host.appendChild(el);
+
+    if (timeout > 0) {
+      window.setTimeout(() => {
+        if (el && el.parentNode) el.remove();
+      }, timeout);
+    }
+    return el;
+  }
+
+  let confirmResolve = null;
+  let confirmOkAction = null;
+  function confirmAsync(message, title) {
+    const modal = document.getElementById("confirmModal");
+    const msg = document.getElementById("confirmMessage");
+    const ttl = document.getElementById("confirmTitle");
+    if (!modal || !msg || !ttl) return Promise.resolve(false);
+    msg.textContent = String(message || "");
+    ttl.textContent = String(title || "Confirm");
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    return new Promise((resolve) => {
+      confirmResolve = resolve;
+    });
+  }
+  function confirmAsyncWithOkAction(message, title, onOk) {
+    confirmOkAction = typeof onOk === "function" ? onOk : null;
+    return confirmAsync(message, title);
+  }
+  function resolveConfirm(result) {
+    const action = confirmOkAction;
+    const resolver = confirmResolve;
+    confirmOkAction = null;
+    confirmResolve = null;
+
+    if (result && typeof action === "function") {
+      try {
+        action();
+      } catch (e) {}
+    }
+    const modal = document.getElementById("confirmModal");
+    if (modal) {
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+    }
+    if (resolver) resolver(!!result);
+  }
+
+  // --- Settings Modal ---
+  function openSettings() {
+    const modal = document.getElementById("settingsModal");
+    if (!modal) return;
+    const savedTab = localStorage.getItem("diagram.settingsTab") || "ui";
+    setSettingsTab(savedTab);
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+  }
+  function closeSettings() {
+    const modal = document.getElementById("settingsModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+  }
+  function setSettingsTab(tab) {
+    const allowed = new Set(["ui", "guide"]);
+    const current = allowed.has(tab) ? tab : "ui";
+    localStorage.setItem("diagram.settingsTab", current);
+
+    document.querySelectorAll("[data-settings-panel]").forEach((panel) => {
+      panel.classList.toggle(
+        "hidden",
+        panel.getAttribute("data-settings-panel") !== current
+      );
+    });
+    document.querySelectorAll("[data-settings-tab]").forEach((btn) => {
+      const active = btn.getAttribute("data-settings-tab") === current;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function openPalette() {
+    const modal = document.getElementById("paletteModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+  }
+  function closePalette() {
+    const modal = document.getElementById("paletteModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+  }
+
+  function closeDownloadMenu() {
+    const menu = document.getElementById("downloadMenu");
+    if (!menu) return;
+    menu.classList.add("hidden");
+  }
+  function toggleDownloadMenu(e) {
+    if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+    const menu = document.getElementById("downloadMenu");
+    if (!menu) return;
+    menu.classList.toggle("hidden");
+  }
+  document.addEventListener("click", function (e) {
+    const menu = document.getElementById("downloadMenu");
+    const host = document.getElementById("downloadMenuHost");
+    if (!menu || menu.classList.contains("hidden")) return;
+    if (host && host.contains(e.target)) return;
+    closeDownloadMenu();
+  });
+  window.addEventListener("keydown", function (e) {
+    if (e && e.key === "Escape") closeDownloadMenu();
+  });
+
+  // --- Type Guide ---
+  const TYPE_GUIDE = [
+    {
+      id: "auto",
+      titleKey: "typeAuto",
+      descKey: "typeAutoDesc",
+      code: "flowchart TD\n  A[Prompt] --> B{Pick type}\n  B -->|Flow| C[Flowchart]\n  B -->|Time| D[Sequence]\n  B -->|Plan| E[Gantt]",
+    },
+    {
+      id: "flowchart",
+      titleKey: "typeFlowchart",
+      descKey: "typeFlowchartDesc",
+      code: "flowchart TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[OK]\n  B -->|No| D[Retry]\n  D --> B",
+    },
+    {
+      id: "sequence",
+      titleKey: "typeSequence",
+      descKey: "typeSequenceDesc",
+      code: "sequenceDiagram\n  participant U as User\n  participant S as System\n  U->>S: Request\n  S-->>U: Response",
+    },
+    {
+      id: "gantt",
+      titleKey: "typeGantt",
+      descKey: "typeGanttDesc",
+      code: "gantt\n  dateFormat  YYYY-MM-DD\n  title Project Plan\n  section Build\n  Design   :a1, 2025-01-01, 7d\n  Implement:after a1, 10d\n  Test     :after Implement, 5d",
+    },
+    {
+      id: "class",
+      titleKey: "typeClass",
+      descKey: "typeClassDesc",
+      code: "classDiagram\n  class User {\n    +String name\n    +login()\n  }\n  class Admin\n  Admin --|> User",
+    },
+    {
+      id: "state",
+      titleKey: "typeState",
+      descKey: "typeStateDesc",
+      code: "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Working: start\n  Working --> Idle: stop",
+    },
+    {
+      id: "er",
+      titleKey: "typeEr",
+      descKey: "typeErDesc",
+      code: "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  ORDER ||--|{ LINE_ITEM : contains\n  CUSTOMER {\n    string name\n  }\n  ORDER {\n    string id\n  }",
+    },
+    {
+      id: "journey",
+      titleKey: "typeJourney",
+      descKey: "typeJourneyDesc",
+      code: "journey\n  title Shopping\n  section Browse\n    Find product: 5: User\n    Compare: 3: User\n  section Buy\n    Checkout: 2: User\n    Receive: 5: User",
+    },
+    {
+      id: "pie",
+      titleKey: "typePie",
+      descKey: "typePieDesc",
+      code: 'pie title Breakdown\n  "A" : 40\n  "B" : 35\n  "C" : 25',
+    },
+    {
+      id: "git",
+      titleKey: "typeGit",
+      descKey: "typeGitDesc",
+      code: "gitGraph\n  commit\n  branch feature\n  checkout feature\n  commit\n  checkout main\n  merge feature\n  commit",
+    },
+    {
+      id: "c4",
+      titleKey: "typeC4",
+      descKey: "typeC4Desc",
+      code: 'C4Context\n  title System Context\n  Person(user, "User")\n  System(app, "App")\n  Rel(user, app, "Uses")',
+    },
+    {
+      id: "mindmap",
+      titleKey: "typeMindmap",
+      descKey: "typeMindmapDesc",
+      code: "mindmap\n  root((Idea))\n    A\n      A1\n      A2\n    B\n      B1",
+    },
+  ];
+
+  let typeHelpHasRendered = false;
+  function openTypeHelp() {
+    const modal = document.getElementById("typeHelpModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    if (!typeHelpHasRendered) {
+      typeHelpHasRendered = true;
+      renderTypeHelp();
+    }
+  }
+  function closeTypeHelp() {
+    const modal = document.getElementById("typeHelpModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+  }
+
+  async function renderTypeHelp() {
+    const host = document.getElementById("typeHelpGrid");
+    if (!host) return;
+
+    host.innerHTML = TYPE_GUIDE.map((item) => {
+      const title = escapeHtml(t(item.titleKey));
+      const desc = escapeHtml(t(item.descKey));
+      const code = escapeHtml(item.code);
+      return (
+        '<div class="type-help-card rounded-lg p-3 grid gap-2">' +
+        '<div class="grid gap-0.5">' +
+        '<div class="text-xs font-extrabold tracking-wide">' +
+        title +
+        "</div>" +
+        '<div class="text-sm ui-muted leading-relaxed">' +
+        desc +
+        "</div>" +
+        "</div>" +
+        '<div class="type-help-preview rounded-lg p-3 overflow-hidden" id="typeHelpPreview-' +
+        item.id +
+        '"></div>' +
+        '<details class="group">' +
+        '<summary class="cursor-pointer select-none text-xs font-bold ui-muted hover:opacity-90 transition">' +
+        escapeHtml(t("typeGuideCode")) +
+        "</summary>" +
+        '<pre class="type-help-code mt-2 rounded-lg p-3 text-xs overflow-auto whitespace-pre-wrap break-words"><code>' +
+        code +
+        "</code></pre>" +
+        "</details>" +
+        "</div>"
+      );
+    }).join("");
+
+    const theme = getDiagramTheme();
+    const config = Object.assign({}, getMermaidConfig(theme), {
+      startOnLoad: false,
+      securityLevel: "loose",
+    });
+    mermaid.initialize(config);
+
+    for (let i = 0; i < TYPE_GUIDE.length; i++) {
+      const item = TYPE_GUIDE[i];
+      const target = document.getElementById("typeHelpPreview-" + item.id);
+      if (!target) continue;
+      target.innerHTML = '<div class="text-sm ui-muted">Loading...</div>';
+      try {
+        const id = "typeHelpSvg_" + item.id + "_" + Date.now() + "_" + i;
+        const rendered = await mermaid.render(id, item.code);
+        target.innerHTML = rendered.svg || "";
+      } catch (e) {
+        target.innerHTML =
+          '<div class="text-sm ui-muted leading-relaxed">' +
+          escapeHtml(t("typeGuideRenderError")) +
+          "</div>";
+      }
+    }
+  }
+
+  // --- UI Theme ---
+  function setUiTheme(theme) {
+    const isLight = theme === "light";
+    document.body.classList.toggle("ui-light", isLight);
+    document.body.classList.toggle("ui-dark", !isLight);
+    document.body.style.backgroundColor = isLight
+      ? "var(--ui-bg)"
+      : "var(--ui-bg)";
+    syncUiThemeButtons();
+  }
+  function setUiThemeAndSync(theme) {
+    const next = theme === "light" ? "light" : "dark";
+    localStorage.setItem(UI_THEME_KEY, next);
+    setUiTheme(next);
+  }
+  function syncUiThemeButtons() {
+    const theme =
+      localStorage.getItem(UI_THEME_KEY) ||
+      (document.body.classList.contains("ui-light") ? "light" : "dark");
+    document.querySelectorAll("[data-ui-theme]").forEach((btn) => {
+      const active = btn.getAttribute("data-ui-theme") === theme;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+  // --- Language (i18n) ---
+  const I18N = {
+    ja: {
+      modalCancel: "キャンセル",
+      modalOk: "OK",
+      modalClose: "閉じる",
+      settings: "設定",
+      settingsTitle: "設定",
+      typeGuideTitle: "タイプガイド",
+      typeGuideIntro:
+        "各タイプで作れる図のイメージ例です。クリックでコードも確認できます。",
+      typeGuideOpenTitle: "タイプガイドを開く",
+      typeGuideCode: "コードを見る",
+      typeGuideRenderError: "プレビューを表示できません",
+      uiTheme: "UIテーマ",
+      lang: "言語",
+      palette: "ノード / エッジ 色",
+      node: "ノード",
+      edge: "エッジ",
+      paletteHint: "この設定はフローチャートのみ反映されます",
+      uiDark: "ダーク",
+      uiLight: "ライト",
+      sidePanelTitle: "設定",
+      prompt: "プロンプト",
+      type: "タイプ",
+      model: "モデル",
+      generate: "生成する",
+      thinking: "Thinking...",
+      promptNeeded: "プロンプトを入力してください",
+      generated: "生成しました",
+      updatingPreview: "プレビュー更新中...",
+      editNodeLabelTitle: "ノード名を編集",
+      editEdgeLabelTitle: "エッジ名を編集",
+      addEdgeTitle: "エッジを追加",
+      nodeLabelPlaceholder: "ノード名",
+      edgeLabelPlaceholder: "エッジ名（任意）",
+      emptyMakesNoLabel: "空欄にするとラベルなしになります。",
+      submitHint: "Ctrl/Cmd+Enterで確定。",
+      sideTabCreate: "作成",
+      sideTabEditor: "編集",
+      sideTabHistory: "履歴",
+      advanced: "詳細",
+      codeEditor: "コード",
+      preview: "プレビュー更新",
+      geminiImageBtn: "Geminiで画像生成",
+      geminiImageCopied: "画像生成用プロンプトをコピーしました",
+      geminiImageEmpty: "Mermaidコードが空です",
+      geminiOpenConfirm:
+        "クリップボードにコピーしました。Geminiのページを開きますか？",
+      imagePromptTitle: "画像生成プロンプト",
+      imagePromptLangLabel: "言語",
+      imagePromptStyleLabel: "スタイル",
+      imagePromptCustomLabel: "スタイル追加（任意）",
+      imagePromptNegativesLabel: "ネガティブ追加（任意）",
+      imagePromptHint:
+        "Mermaidのノード/分岐/サブグラフ名などのテキストも表示します（スライド風に整理）。",
+      imagePromptOk: "生成してコピー",
+      imagePromptCancel: "キャンセル",
+      history: "履歴",
+      historyEmpty: "履歴はまだありません",
+      historyUpdating: "更新中...",
+      historyLoading: "読み込み中...",
+      historyDeleting: "削除中...",
+      historyClearing: "全削除中...",
+      historyRefreshTitle: "履歴を更新",
+      historyClearTitle: "履歴を全削除",
+      historyClearConfirm: "履歴をすべて削除します。よろしいですか？",
+      historyRestoreTitle: "この履歴を復元",
+      historyDeleteTitle: "削除",
+      settingsTabUi: "UI",
+      settingsTabGuide: "ガイド",
+      settingsTabDraw: "描画",
+      settingsTabHistory: "履歴",
+      fontSizeLabel: "文字サイズ",
+      fontSizeSmall: "小",
+      fontSizeNormal: "普通",
+      fontSizeLarge: "大",
+      guideLabel: "操作ガイド",
+      guideStepTitle: "基本の流れ",
+      guideStep1: "テンプレートから選ぶ、または自由にプロンプトを入力します",
+      guideStep2: "「生成する」ボタンまたは Ctrl + Enter で図を生成します",
+      guideStep3: "微調整は Editor タブで直接コードを編集 → プレビュー更新をクリック",
+      guideStep4: "フローチャート選択時のみ、エッジ追加や描画設定メニューが表示されます",
+      guideStep5: "最新10件の履歴を保存。「さらに読み込む」で過去分も確認できます",
+      guideShortcutTitle: "ショートカット",
+      guideShortcut1: "図を生成する",
+      guideShortcut2: "メニュー・モーダルを閉じる",
+      guideExportTitle: "ダウンロード / 共有",
+      guideExportText: "右上のダウンロードボタンから PNG / SVG / MD(Mermaid) 形式で保存可能です。",
+      guideTipsTitle: "便利な機能・チップス",
+      guideTips1: "• フローチャートの各パーツをクリックすると、ラベルを直接書き換えられます。",
+      guideTips2: "• 図の上でドラッグすると移動、マウスホイールでズーム（拡大・縮小）が自在に行えます。",
+      guideTips3: "• 「描画設定」から、ノードや線の色を自由に変更して見やすく調整可能です。",
+      historySettingsLabel: "履歴",
+      historyRefreshText: "更新",
+      historyClearText: "全削除",
+      historyLoadMoreText: "さらに読み込む",
+      historyHint: "操作中はスピナーとオーバーレイで表示します。",
+      typeAuto: "Auto（おまかせ）",
+      typeAutoDesc: "内容に合わせて最適な図タイプを自動で選びます。",
+      typeFlowchart: "Flowchart",
+      typeFlowchartDesc: "処理フローや分岐を表現します。",
+      typeSequence: "Sequence",
+      typeSequenceDesc:
+        "登場人物(オブジェクト)間のやり取りを時系列で表現します。",
+      typeGantt: "Gantt",
+      typeGanttDesc: "プロジェクト計画・スケジュールを表現します。",
+      typeClass: "Class",
+      typeClassDesc: "クラス構造や関連(継承/集約など)を表現します。",
+      typeState: "State",
+      typeStateDesc: "状態遷移を表現します。",
+      typeEr: "ER",
+      typeErDesc: "データのエンティティと関係を表現します。",
+      typeJourney: "Journey",
+      typeJourneyDesc: "ユーザージャーニーを段階と満足度で表現します。",
+      typePie: "Pie",
+      typePieDesc: "割合を表現します。",
+      typeGit: "Git",
+      typeGitDesc: "ブランチ/マージなどの履歴を表現します。",
+      typeC4: "C4",
+      typeC4Desc: "システムの関係（コンテキスト）を表現します。",
+      typeMindmap: "Mindmap",
+      typeMindmapDesc: "アイデアを階層構造で整理します。",
+    },
+    en: {
+      modalCancel: "Cancel",
+      modalOk: "OK",
+      modalClose: "Close",
+      settings: "Settings",
+      settingsTitle: "SETTINGS",
+      typeGuideTitle: "Type Guide",
+      typeGuideIntro:
+        "Example diagrams for each type. Click to view the sample code.",
+      typeGuideOpenTitle: "Open type guide",
+      typeGuideCode: "View code",
+      typeGuideRenderError: "Preview unavailable",
+      uiTheme: "UI THEME",
+      lang: "LANGUAGE",
+      palette: "NODE / EDGE COLOR",
+      node: "Node",
+      edge: "Edge",
+      paletteHint: "Applies to Mermaid (mainly Flowchart)",
+      uiDark: "DARK",
+      uiLight: "LIGHT",
+      sidePanelTitle: "Settings",
+      prompt: "Prompt",
+      type: "Type",
+      model: "Model",
+      generate: "Generate",
+      thinking: "Thinking...",
+      promptNeeded: "Enter a prompt",
+      generated: "Generated",
+      updatingPreview: "Updating preview...",
+      editNodeLabelTitle: "Edit node label",
+      editEdgeLabelTitle: "Edit edge label",
+      addEdgeTitle: "Add edge",
+      nodeLabelPlaceholder: "Node label",
+      edgeLabelPlaceholder: "Edge label (optional)",
+      emptyMakesNoLabel: "Leave empty to remove the label.",
+      submitHint: "Press Ctrl/Cmd+Enter to submit.",
+      sideTabCreate: "Create",
+      sideTabEditor: "Editor",
+      sideTabHistory: "History",
+      advanced: "Advanced",
+      codeEditor: "Code",
+      preview: "Refresh Preview",
+      geminiImageBtn: "Generate image in Gemini",
+      geminiImageCopied: "Image prompt copied to clipboard",
+      geminiImageEmpty: "Mermaid code is empty",
+      geminiOpenConfirm: "Copied to clipboard. Open Gemini now?",
+      imagePromptTitle: "Image prompt",
+      imagePromptLangLabel: "Language",
+      imagePromptStyleLabel: "Style",
+      imagePromptCustomLabel: "Custom style (optional)",
+      imagePromptNegativesLabel: "Extra negatives (optional)",
+      imagePromptHint: "Renders text labels from Mermaid (slide-like layout).",
+      imagePromptOk: "Generate & Copy",
+      imagePromptCancel: "Cancel",
+      history: "History",
+      historyEmpty: "No history yet",
+      historyUpdating: "Updating...",
+      historyLoading: "Loading...",
+      historyDeleting: "Deleting...",
+      historyClearing: "Clearing...",
+      historyRefreshTitle: "Refresh history",
+      historyClearTitle: "Clear history",
+      historyClearConfirm: "Delete all history entries?",
+      historyRestoreTitle: "Restore this entry",
+      historyDeleteTitle: "Delete",
+      settingsTabUi: "UI",
+      settingsTabGuide: "Guide",
+      settingsTabDraw: "Draw",
+      settingsTabHistory: "History",
+      fontSizeLabel: "TEXT SIZE",
+      fontSizeSmall: "Small",
+      fontSizeNormal: "Normal",
+      fontSizeLarge: "Large",
+      guideLabel: "GUIDE",
+      guideStepTitle: "Basic Flow",
+      guideStep1: "Pick a template or enter your own prompt to start",
+      guideStep2: "Click 'Generate' or press Ctrl + Enter to create the diagram",
+      guideStep3: "Fine-tune in the 'Editor' tab by editing code directly → 'Refresh Preview'",
+      guideStep4: "Extra tools like 'Add Edge' or 'Draw' are available for Flowcharts",
+      guideStep5: "Auto-saves the latest 10 items. Click 'Load more' for older history",
+      guideShortcutTitle: "Shortcuts",
+      guideShortcut1: "Generate diagram",
+      guideShortcut2: "Close current menu/modal",
+      guideExportTitle: "Download & Export",
+      guideExportText: "Use the download icon (top-right) to save as PNG, SVG, or MD (Mermaid).",
+      guideTipsTitle: "Advanced Features & Tips",
+      guideTips1: "• Click any node in a Flowchart to edit its label text interactively.",
+      guideTips2: "• Click and drag to pan the diagram; use the scroll wheel to zoom in/out.",
+      guideTips3: "• Customize appearance in 'Draw' to change node and edge colors.",
+      historySettingsLabel: "History",
+      historyRefreshText: "Refresh",
+      historyClearText: "Clear",
+      historyLoadMoreText: "Load more",
+      historyHint: "Shows spinner/overlay while processing.",
+      typeAuto: "Auto",
+      typeAutoDesc:
+        "Automatically picks a suitable diagram type from your prompt.",
+      typeFlowchart: "Flowchart",
+      typeFlowchartDesc: "Shows processes and branching logic.",
+      typeSequence: "Sequence",
+      typeSequenceDesc: "Shows interactions over time between participants.",
+      typeGantt: "Gantt",
+      typeGanttDesc: "Shows project schedules and tasks.",
+      typeClass: "Class",
+      typeClassDesc: "Shows classes and relationships.",
+      typeState: "State",
+      typeStateDesc: "Shows state transitions.",
+      typeEr: "ER",
+      typeErDesc: "Shows entities and database relationships.",
+      typeJourney: "Journey",
+      typeJourneyDesc: "Shows user journey steps and sentiment.",
+      typePie: "Pie",
+      typePieDesc: "Shows proportions.",
+      typeGit: "Git",
+      typeGitDesc: "Shows branching and merging history.",
+      typeC4: "C4",
+      typeC4Desc: "Shows system context relationships.",
+      typeMindmap: "Mindmap",
+      typeMindmapDesc: "Organizes ideas hierarchically.",
+    },
+  };
+  function getCurrentLang() {
+    const raw = localStorage.getItem(UI_LANG_KEY) || "ja";
+    return raw === "en" ? "en" : "ja";
+  }
+  function t(key) {
+    const lang = getCurrentLang();
+    const dict = I18N[lang];
+    if (dict && dict[key] != null) return dict[key];
+    return key;
+  }
+  function setLanguage(lang) {
+    const next = lang === "en" ? "en" : "ja";
+    const t = I18N[next];
+    const settingsBtn = document.getElementById("settingsBtn");
+    if (settingsBtn) settingsBtn.title = t.settings;
+    const settingsTitle = document.getElementById("settingsTitle");
+    if (settingsTitle) settingsTitle.textContent = t.settingsTitle;
+
+    const confirmCancelBtn = document.getElementById("confirmCancelBtn");
+    if (confirmCancelBtn)
+      confirmCancelBtn.textContent = t.modalCancel || "Cancel";
+    const confirmOkBtn = document.getElementById("confirmOkBtn");
+    if (confirmOkBtn) confirmOkBtn.textContent = t.modalOk || "OK";
+    const textEditCancelBtn = document.getElementById("textEditCancelBtn");
+    if (textEditCancelBtn)
+      textEditCancelBtn.textContent = t.modalCancel || "Cancel";
+    const textEditOkBtn = document.getElementById("textEditOkBtn");
+    if (textEditOkBtn) textEditOkBtn.textContent = t.modalOk || "OK";
+    const textEditCloseBtn = document.getElementById("textEditCloseBtn");
+    if (textEditCloseBtn) textEditCloseBtn.title = t.modalClose || "Close";
+    const typeHelpTitle = document.getElementById("typeHelpTitle");
+    if (typeHelpTitle) typeHelpTitle.textContent = t.typeGuideTitle;
+    const typeHelpIntro = document.getElementById("typeHelpIntro");
+    if (typeHelpIntro) typeHelpIntro.textContent = t.typeGuideIntro;
+    const typeHelpOpenBtn = document.getElementById("typeHelpOpenBtn");
+    if (typeHelpOpenBtn) typeHelpOpenBtn.title = t.typeGuideOpenTitle;
+    const uiThemeLabel = document.getElementById("uiThemeLabel");
+    if (uiThemeLabel) uiThemeLabel.textContent = t.uiTheme;
+    const langLabel = document.getElementById("langLabel");
+    if (langLabel) langLabel.textContent = t.lang;
+    const fontSizeLabel = document.getElementById("fontSizeLabel");
+    if (fontSizeLabel)
+      fontSizeLabel.textContent = t.fontSizeLabel || "TEXT SIZE";
+    const fontSizeSmall = document.getElementById("fontSizeSmall");
+    if (fontSizeSmall) fontSizeSmall.textContent = t.fontSizeSmall || "Small";
+    const fontSizeNormal = document.getElementById("fontSizeNormal");
+    if (fontSizeNormal)
+      fontSizeNormal.textContent = t.fontSizeNormal || "Normal";
+    const fontSizeLarge = document.getElementById("fontSizeLarge");
+    if (fontSizeLarge) fontSizeLarge.textContent = t.fontSizeLarge || "Large";
+    const paletteLabel = document.getElementById("paletteLabel");
+    if (paletteLabel) paletteLabel.textContent = t.palette;
+    const paletteModalTitle = document.getElementById("paletteModalTitle");
+    if (paletteModalTitle) paletteModalTitle.textContent = t.palette;
+    const paletteModalHint = document.getElementById("paletteModalHint");
+    if (paletteModalHint) paletteModalHint.textContent = t.paletteHint;
+    const nodeLabel = document.getElementById("nodeColorLabel");
+    if (nodeLabel) nodeLabel.textContent = t.node;
+    const edgeLabel = document.getElementById("edgeColorLabel");
+    if (edgeLabel) edgeLabel.textContent = t.edge;
+    const hint = document.getElementById("paletteHint");
+    if (hint) hint.textContent = t.paletteHint;
+
+    const uiThemeDarkBtn = document.getElementById("uiThemeDarkBtn");
+    if (uiThemeDarkBtn) uiThemeDarkBtn.textContent = t.uiDark;
+    const uiThemeLightBtn = document.getElementById("uiThemeLightBtn");
+    if (uiThemeLightBtn) uiThemeLightBtn.textContent = t.uiLight;
+
+    if (typeof setSideTab === "function")
+      setSideTab(localStorage.getItem(SIDE_TAB_KEY) || "create", {
+        store: false,
+      });
+    const promptLabel = document.getElementById("promptLabel");
+    if (promptLabel) promptLabel.textContent = t.prompt;
+    const typeLabel = document.getElementById("typeLabel");
+    if (typeLabel) typeLabel.textContent = t.type;
+    const generateText = document.getElementById("generateText");
+    if (generateText) generateText.textContent = t.generate;
+    const codeEditorLabel = document.getElementById("codeEditorLabel");
+    if (codeEditorLabel) codeEditorLabel.textContent = t.codeEditor;
+    const previewText = document.getElementById("previewUpdateText");
+    if (previewText) previewText.textContent = t.preview;
+    const geminiImageBtnText = document.getElementById("geminiImageBtnText");
+    if (geminiImageBtnText) geminiImageBtnText.textContent = t.geminiImageBtn;
+    const geminiImageBtn = document.getElementById("geminiImageBtn");
+    if (geminiImageBtn) geminiImageBtn.title = t.geminiImageBtn;
+    const geminiImageHeaderBtn = document.getElementById(
+      "geminiImageHeaderBtn"
+    );
+    if (geminiImageHeaderBtn) geminiImageHeaderBtn.title = t.geminiImageBtn;
+
+    const imagePromptTitle = document.getElementById("imagePromptTitle");
+    if (imagePromptTitle)
+      imagePromptTitle.textContent = t.imagePromptTitle || "Image prompt";
+    const imagePromptLangLabel = document.getElementById(
+      "imagePromptLangLabel"
+    );
+    if (imagePromptLangLabel)
+      imagePromptLangLabel.textContent = t.imagePromptLangLabel || "Language";
+    const imagePromptStyleLabel = document.getElementById(
+      "imagePromptStyleLabel"
+    );
+    if (imagePromptStyleLabel)
+      imagePromptStyleLabel.textContent = t.imagePromptStyleLabel || "Style";
+    const imagePromptCustomLabel = document.getElementById(
+      "imagePromptCustomLabel"
+    );
+    if (imagePromptCustomLabel)
+      imagePromptCustomLabel.textContent =
+        t.imagePromptCustomLabel || "Custom style (optional)";
+    const imagePromptNegativesLabel = document.getElementById(
+      "imagePromptNegativesLabel"
+    );
+    if (imagePromptNegativesLabel)
+      imagePromptNegativesLabel.textContent =
+        t.imagePromptNegativesLabel || "Extra negatives (optional)";
+    const imagePromptHint = document.getElementById("imagePromptHint");
+    if (imagePromptHint) imagePromptHint.textContent = t.imagePromptHint || "";
+    const imagePromptCancelBtn = document.getElementById(
+      "imagePromptCancelBtn"
+    );
+    if (imagePromptCancelBtn)
+      imagePromptCancelBtn.textContent =
+        t.imagePromptCancel || t.modalCancel || "Cancel";
+    const imagePromptOkBtn = document.getElementById("imagePromptOkBtn");
+    if (imagePromptOkBtn)
+      imagePromptOkBtn.textContent = t.imagePromptOk || t.modalOk || "OK";
+    const historyLabel = document.getElementById("historyLabelText");
+    if (historyLabel) historyLabel.textContent = t.history;
+
+    const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
+    if (refreshHistoryBtn) refreshHistoryBtn.title = t.historyRefreshTitle;
+    const clearHistoryBtn = document.getElementById("clearHistoryBtn");
+    if (clearHistoryBtn) clearHistoryBtn.title = t.historyClearTitle;
+    const historyStatusText = document.getElementById("historyStatusText");
+    const historyStatusEl = document.getElementById("historyStatus");
+    if (
+      historyStatusText &&
+      historyStatusEl &&
+      !historyStatusEl.classList.contains("hidden")
+    )
+      historyStatusText.textContent = t.historyUpdating;
+    const historyOverlayText = document.getElementById("historyOverlayText");
+    const historyOverlayEl = document.getElementById("historyOverlay");
+    if (
+      historyOverlayText &&
+      historyOverlayEl &&
+      !historyOverlayEl.classList.contains("hidden")
+    )
+      historyOverlayText.textContent = t.historyUpdating;
+
+    const tabUi = document.getElementById("settingsTabUi");
+    if (tabUi) tabUi.textContent = t.settingsTabUi;
+    const tabGuide = document.getElementById("settingsTabGuide");
+    if (tabGuide) tabGuide.textContent = t.settingsTabGuide || "GUIDE";
+    const tabDraw = document.getElementById("settingsTabDraw");
+    if (tabDraw) tabDraw.textContent = t.settingsTabDraw;
+    const tabHistory = document.getElementById("settingsTabHistory");
+    if (tabHistory) tabHistory.textContent = t.settingsTabHistory;
+    const guideLabel = document.getElementById("guideLabel");
+    if (guideLabel) guideLabel.textContent = t.guideLabel || "GUIDE";
+    const guideStepTitle = document.getElementById("guideStepTitle");
+    if (guideStepTitle)
+      guideStepTitle.textContent = t.guideStepTitle || "Basic Flow";
+    const guideStep1 = document.getElementById("guideStep1");
+    if (guideStep1) guideStep1.textContent = t.guideStep1 || "";
+    const guideStep2 = document.getElementById("guideStep2");
+    if (guideStep2) guideStep2.textContent = t.guideStep2 || "";
+    const guideStep3 = document.getElementById("guideStep3");
+    if (guideStep3) guideStep3.textContent = t.guideStep3 || "";
+    const guideStep4 = document.getElementById("guideStep4");
+    if (guideStep4) guideStep4.textContent = t.guideStep4 || "";
+    const guideStep5 = document.getElementById("guideStep5");
+    if (guideStep5) guideStep5.textContent = t.guideStep5 || "";
+    const guideShortcutTitle = document.getElementById("guideShortcutTitle");
+    if (guideShortcutTitle)
+      guideShortcutTitle.textContent = t.guideShortcutTitle || "Shortcuts";
+    const guideShortcut1 = document.getElementById("guideShortcut1");
+    if (guideShortcut1) guideShortcut1.textContent = t.guideShortcut1 || "";
+    const guideExportTitle = document.getElementById("guideExportTitle");
+    if (guideExportTitle)
+      guideExportTitle.textContent = t.guideExportTitle || "Download";
+    const guideExportText = document.getElementById("guideExportText");
+    if (guideExportText) guideExportText.textContent = t.guideExportText || "";
+
+    const guideTipsTitle = document.getElementById("guideTipsTitle");
+    if (guideTipsTitle)
+      guideTipsTitle.textContent = t.guideTipsTitle || "Tips";
+    const guideTips1 = document.getElementById("guideTips1");
+    if (guideTips1) guideTips1.textContent = t.guideTips1 || "";
+    const guideTips2 = document.getElementById("guideTips2");
+    if (guideTips2) guideTips2.textContent = t.guideTips2 || "";
+    const guideTips3 = document.getElementById("guideTips3");
+    if (guideTips3) {
+      guideTips3.textContent = t.guideTips3 || "";
+      guideTips3.classList.remove("hidden");
+    } else if (t.guideTips3) {
+      // If guideTips3 element doesn't exist but translation does, we might want to append it
+      const parent = document.getElementById("guideTips2") ? document.getElementById("guideTips2").parentNode : null;
+      if (parent) {
+        const p = document.createElement("p");
+        p.id = "guideTips3";
+        p.className = "font-medium";
+        p.textContent = t.guideTips3;
+        parent.appendChild(p);
+      }
+    }
+    const historySettingsLabel = document.getElementById(
+      "historySettingsLabel"
+    );
+    if (historySettingsLabel)
+      historySettingsLabel.textContent = t.historySettingsLabel;
+    const historyRefreshText = document.getElementById("historyRefreshText");
+    if (historyRefreshText)
+      historyRefreshText.textContent = t.historyRefreshText;
+    const historyClearText = document.getElementById("historyClearText");
+    if (historyClearText) historyClearText.textContent = t.historyClearText;
+    const historyLoadMoreText = document.getElementById("historyLoadMoreText");
+    if (historyLoadMoreText)
+      historyLoadMoreText.textContent = t.historyLoadMoreText || "Load more";
+    const historyHint = document.getElementById("historyHint");
+    if (historyHint) historyHint.textContent = t.historyHint;
+
+    document.querySelectorAll("[data-side-tab]").forEach((btn) => {
+      const key = btn.getAttribute("data-side-tab");
+      if (key === "create") btn.textContent = t.sideTabCreate || "Create";
+      if (key === "editor") btn.textContent = t.sideTabEditor || "Editor";
+      if (key === "history") btn.textContent = t.sideTabHistory || "History";
+    });
+    const advancedLabel = document.getElementById("advancedLabel");
+    if (advancedLabel) advancedLabel.textContent = t.advanced || "Advanced";
+
+    // If the type guide has been rendered once, refresh labels in-place.
+    if (typeHelpHasRendered) renderTypeHelp();
+    syncLanguageButtons();
+  }
+  function setLanguageAndSync(lang) {
+    const next = lang === "en" ? "en" : "ja";
+    localStorage.setItem(UI_LANG_KEY, next);
+    setLanguage(next);
+  }
+  function syncLanguageButtons() {
+    const lang = localStorage.getItem(UI_LANG_KEY) || "ja";
+    document.querySelectorAll("[data-lang]").forEach((btn) => {
+      const active = btn.getAttribute("data-lang") === lang;
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  // --- Palette ---
+  function getPalette() {
+    const nodeInput = document.getElementById("nodeColorInput");
+    const edgeInput = document.getElementById("edgeColorInput");
+    const node = (
+      (nodeInput ? nodeInput.value : null) ||
+      localStorage.getItem(PALETTE_NODE_KEY) ||
+      "#60a5fa"
+    ).toLowerCase();
+    const edge = (
+      (edgeInput ? edgeInput.value : null) ||
+      localStorage.getItem(PALETTE_EDGE_KEY) ||
+      "#94a3b8"
+    ).toLowerCase();
+    return { node, edge };
+  }
+  function onPaletteChange() {
+    const { node, edge } = getPalette();
+    localStorage.setItem(PALETTE_NODE_KEY, node);
+    localStorage.setItem(PALETTE_EDGE_KEY, edge);
+    renderPalettePresets();
+    if (document.getElementById("mermaidCode").value) renderDiagram();
+  }
+  function renderPalettePresets() {
+    const host = document.getElementById("palettePresets");
+    if (!host) return;
+    const presets = [
+      { name: "Blue", node: "#60a5fa", edge: "#94a3b8" },
+      { name: "Emerald", node: "#34d399", edge: "#10b981" },
+      { name: "Violet", node: "#a78bfa", edge: "#6366f1" },
+    ];
+    const current = getPalette();
+    host.innerHTML = presets
+      .map((p) => {
+        const active =
+          p.node.toLowerCase() === current.node &&
+          p.edge.toLowerCase() === current.edge;
+        const ring = active
+          ? "2px solid var(--canvas-control-focus, rgba(96,165,250,0.9))"
+          : "1px solid var(--ui-border)";
+        return (
+          '<button type="button" class="ui-surface rounded-lg px-2.5 py-2 text-xs font-bold transition" style="border:' +
+          ring +
+          '" onclick="applyPalettePreset(&quot;' +
+          p.node +
+          "&quot;,&quot;" +
+          p.edge +
+          '&quot;)" title="' +
+          p.name +
+          '"><span class="inline-flex items-center gap-2"><span class="inline-block w-3 h-3 rounded" style="background:' +
+          p.node +
+          '"></span><span class="inline-block w-3 h-3 rounded" style="background:' +
+          p.edge +
+          '"></span>' +
+          p.name +
+          "</span></button>"
+        );
+      })
+      .join("");
+  }
+  function applyPalettePreset(node, edge) {
+    const nodeInput = document.getElementById("nodeColorInput");
+    const edgeInput = document.getElementById("edgeColorInput");
+    if (nodeInput) nodeInput.value = node;
+    if (edgeInput) edgeInput.value = edge;
+    onPaletteChange();
+  }
+
+  function changeTheme() {
+    const theme = getDiagramTheme();
+    updateThemeChips(theme);
+    if (document.getElementById("mermaidCode").value) renderDiagram();
+  }
+
+  function setupPanZoom() {
+    const wrapper = document.getElementById("diagram-wrapper");
+    const output = document.getElementById("diagram-output");
+
+    // 重要: 計算を単純化するために変形の原点を左上に固定します
+    if (output) {
+      output.style.transformOrigin = "0 0";
+    }
+
+    function hasClosest(el, sel) {
+      try {
+        return !!(el && el.closest && el.closest(sel));
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // マウスドラッグ（パン操作）
+    wrapper.addEventListener("mousedown", (e) => {
+      if (
+        hasClosest(e.target, "button") ||
+        hasClosest(e.target, "select") ||
+        hasClosest(e.target, "g.node") ||
+        hasClosest(e.target, "g.edgePath") ||
+        hasClosest(e.target, "g.edgeLabel")
+      )
+        return;
+      isPanning = true;
+      startX = e.clientX - pointX;
+      startY = e.clientY - pointY;
+      wrapper.style.cursor = "grabbing";
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!isPanning) return;
+      e.preventDefault();
+      pointX = e.clientX - startX;
+      pointY = e.clientY - startY;
+      updateTransform();
+    });
+
+    window.addEventListener("mouseup", () => {
+      isPanning = false;
+      wrapper.style.cursor = "grab";
+    });
+
+    function clampScale(next) {
+      const v = Number(next);
+      if (!Number.isFinite(v)) return scale;
+      return Math.max(MIN_SCALE, Math.min(MAX_SCALE, v));
+    }
+
+    // タッチ操作用の中点計算
+    function getTouchMidpoint(touches) {
+      const rect = wrapper.getBoundingClientRect();
+      const clientX = (touches[0].clientX + touches[1].clientX) / 2;
+      const clientY = (touches[0].clientY + touches[1].clientY) / 2;
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+      };
+    }
+
+    // ホイールズーム（マウス位置中心）
+    wrapper.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+
+        // 1. コンテナの位置を取得してマウス座標を相対化する
+        const rect = wrapper.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // 2. 現在のスケールでの「マウス下の論理座標」を計算
+        const worldX = (mouseX - pointX) / scale;
+        const worldY = (mouseY - pointY) / scale;
+
+        // 3. スケール更新
+        const delta = -e.deltaY;
+        const factor = delta > 0 ? 1.1 : 1 / 1.1;
+        const nextScale = clampScale(scale * factor);
+        if (nextScale === scale) return;
+        scale = nextScale;
+
+        // 4. 新しいスケールでも「マウス下の論理座標」が同じ位置に来るように pointX/Y を逆算
+        // mouseX = pointX_new + worldX * scale_new
+        // ∴ pointX_new = mouseX - worldX * scale_new
+        pointX = mouseX - worldX * scale;
+        pointY = mouseY - worldY * scale;
+
+        updateTransform();
+      },
+      { passive: false }
+    );
+
+    // タッチ操作（ピンチイン・アウト）
+    wrapper.addEventListener(
+      "touchstart",
+      (e) => {
+        if (
+          hasClosest(e.target, "button") ||
+          hasClosest(e.target, "select") ||
+          hasClosest(e.target, "g.node") ||
+          hasClosest(e.target, "g.edgePath") ||
+          hasClosest(e.target, "g.edgeLabel")
+        )
+          return;
+
+        if (e.touches.length === 1) {
+          isPanning = true;
+          startX = e.touches[0].clientX - pointX;
+          startY = e.touches[0].clientY - pointY;
+        } else if (e.touches.length === 2) {
+          isPanning = false;
+          initialPinchDistance = getDistance(e.touches);
+          lastScale = scale;
+
+          // ピンチ開始時の中心点と論理座標を保存
+          const mid = getTouchMidpoint(e.touches);
+          // 修正: ここでも相対座標を使って計算
+          pinchWorldX = (mid.x - pointX) / scale;
+          pinchWorldY = (mid.y - pointY) / scale;
+        }
+      },
+      { passive: false }
+    );
+
+    wrapper.addEventListener(
+      "touchmove",
+      (e) => {
+        e.preventDefault();
+        if (isPanning && e.touches.length === 1) {
+          pointX = e.touches[0].clientX - startX;
+          pointY = e.touches[0].clientY - startY;
+          updateTransform();
+          return;
+        }
+        if (e.touches.length === 2 && initialPinchDistance) {
+          const dist = getDistance(e.touches);
+          const nextScale = clampScale(
+            lastScale * (dist / initialPinchDistance)
+          );
+
+          const mid = getTouchMidpoint(e.touches);
+          scale = nextScale;
+
+          // ホイールと同様のロジックで位置補正
+          pointX = mid.x - pinchWorldX * scale;
+          pointY = mid.y - pinchWorldY * scale;
+
+          updateTransform();
+        }
+      },
+      { passive: false }
+    );
+
+    wrapper.addEventListener(
+      "touchend",
+      (e) => {
+        if (e.touches.length === 1) {
+          // ピンチ終了後に指が1本残っていたらスムーズにパン操作へ移行
+          isPanning = true;
+          startX = e.touches[0].clientX - pointX;
+          startY = e.touches[0].clientY - pointY;
+        } else {
+          isPanning = false;
+        }
+        if (e.touches.length < 2) initialPinchDistance = null;
+      },
+      { passive: false }
+    );
+  }
+
+  function getDistance(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  function updateTransform() {
+    document.getElementById("diagram-output").style.transform =
+      "translate(" + pointX + "px, " + pointY + "px) scale(" + scale + ")";
+  }
+  function zoomIn() {
+    scale *= 1.2;
+    updateTransform();
+  }
+  function zoomOut() {
+    scale /= 1.2;
+    updateTransform();
+  }
+  function resetZoom() {
+    scale = 1;
+    pointX = 0;
+    pointY = 0;
+    updateTransform();
+  }
+
+  // --- Generation Logic ---
+  function startGeneration() {
+    const input = document.getElementById("userInput").value;
+    const model = "flash-lite"; // Fixed to Gemini Flash Lite
+    const diagramType = document.getElementById("diagramTypeSelect").value;
+
+    // ファイルがある場合はプロンプト空でもOKとする（画像の説明などを求める場合があるため）
+    if (!input && !currentFile) {
+      showToast("info", "プロンプトを入力するか、ファイルを添付してください");
+      return;
+    }
+
+    if (window.innerWidth < 768) {
+      togglePanel(false);
+    }
+
+    setAppState(APP_STATE.generating);
+    showLoading(true, "THINKING...");
+    currentRetry = 0;
+    proFallbackUsed = 0;
+    repairHistory = [];
+    pendingHistorySave = true;
+
+    // 引数に currentFile を追加
+    google.script.run
+      .withSuccessHandler(onSuccess)
+      .withFailureHandler(onFailure)
+      .callGeminiAPI(
+        input,
+        model,
+        diagramType,
+        currentFile,
+        null,
+        null,
+        null,
+        getCurrentLang()
+      );
+  }
+
+  function onSuccess(code) {
+    document.getElementById("mermaidCode").value = code;
+    renderDiagram(true);
+  }
+
+  function onFailure(error) {
+    showLoading(false);
+    togglePanel(true);
+    pendingHistorySave = false;
+    setAppState(APP_STATE.error, {
+      message: error && error.message ? error.message : String(error),
+    });
+  }
+
+  function scheduleRenderDiagram(enableAutoRepair) {
+    showLoading(
+      true,
+      typeof t === "function" ? t("updatingPreview") : "Updating preview..."
+    );
+    window.setTimeout(() => {
+      Promise.resolve(renderDiagram(!!enableAutoRepair)).catch((e) => {
+        console.error("Render failed:", e);
+        showLoading(false);
+        showToast("error", e && e.message ? e.message : String(e));
+      });
+    }, 0);
+  }
+
+  async function renderDiagram(enableAutoRepair = false) {
+    const wasGenerating = appState === APP_STATE.generating;
+    const code = document.getElementById("mermaidCode").value;
+    const outputDiv = document.getElementById("diagram-output");
+    const theme = getDiagramTheme();
+
+    console.group("🎨 [De:gram] Render Diagram");
+    console.log("Raw Code from Textarea:", code); // 描画直前のコード
+
+    syncFlowOnlyControls(code);
+    const layoutedCode = applyResponsiveLayout(code);
+
+    console.log("Layout Adjusted Code:", layoutedCode); // レイアウト調整後のコード
+
+    const mermaidConfig = getMermaidConfig(theme);
+    mermaid.initialize(mermaidConfig);
+    try {
+      await mermaid.parse(layoutedCode);
+      outputDiv.innerHTML = "";
+      const id = "graphDiv" + Date.now();
+      const { svg } = await mermaid.render(id, layoutedCode);
+      if (svg && /Syntax error in text/i.test(svg)) {
+        throw new Error("Syntax error in diagram");
+      }
+      outputDiv.innerHTML = svg;
+      setupInlineLabelEditing(outputDiv);
+      outputDiv.classList.remove("opacity-0");
+      clearCanvasError();
+      showLoading(false);
+      document.getElementById("retryCount").classList.add("hidden");
+      if (pendingHistorySave) {
+        pendingHistorySave = false;
+        saveHistory({ reason: "auto" });
+      }
+      if (wasGenerating) setAppState(APP_STATE.success);
+      else syncAppStateFromInputs();
+      console.log("✅ Render Successful");
+      console.groupEnd();
+      return true;
+    } catch (error) {
+      console.error("❌ Render Failed:", error);
+      console.log("Failed Code Snippet:", layoutedCode); // エラーを起こした確定的なコード
+
+      // エラーオブジェクトの詳細を展開
+      if (error.hash) console.error("Error Hash:", error.hash);
+      console.groupEnd();
+      console.error("Mermaid Error:", error);
+      if (enableAutoRepair) {
+        const input = document.getElementById("userInput").value;
+        const selectedModel = "flash-lite";
+        const diagramType = document.getElementById("diagramTypeSelect").value;
+
+        // record failure (keep last few only)
+        const lastModel = selectedModel;
+        repairHistory.push({
+          attempt: repairHistory.length + 1,
+          model: lastModel,
+          error: String(error && error.message ? error.message : error),
+          code: String(code || ""),
+        });
+        if (repairHistory.length > 6) repairHistory = repairHistory.slice(-6);
+
+        const canRetryWithSelected = currentRetry < MAX_RETRIES;
+
+        let nextModel = null;
+        if (canRetryWithSelected) {
+          currentRetry++;
+          nextModel = selectedModel;
+          document.getElementById("retryCount").classList.remove("hidden");
+          showLoading(
+            true,
+            "REPAIRING... (" + currentRetry + "/" + MAX_RETRIES + ")"
+          );
+        }
+
+        if (nextModel) {
+          // annotate the last history entry with the model we'll use next (helps server-side debugging)
+          repairHistory[repairHistory.length - 1].__nextModel = nextModel;
+
+          google.script.run
+            .withSuccessHandler(onSuccess)
+            .withFailureHandler(onFailure)
+            .callGeminiAPI(
+              input,
+              nextModel,
+              diagramType,
+              currentFile,
+              code,
+              error.message,
+              JSON.stringify(repairHistory),
+              getCurrentLang()
+            );
+          return false;
+        }
+      }
+      // fallthrough: auto-repair disabled OR exhausted
+      showLoading(false);
+      togglePanel(true);
+      pendingHistorySave = false;
+      outputDiv.innerHTML = "";
+      outputDiv.classList.add("opacity-0");
+      const msg =
+        error && error.message ? String(error.message) : String(error);
+      if (wasGenerating) {
+        setAppState(APP_STATE.error, { message: msg, sticky: true });
+      } else {
+        showCanvasError(msg);
+        syncAppStateFromInputs();
+      }
+      return false;
+    }
+  }
+
+  function setupInlineLabelEditing(rootEl) {
+    const root =
+      rootEl && rootEl.addEventListener
+        ? rootEl
+        : document.getElementById("diagram-output");
+    if (!root) return;
+    if (root.__inlineEditBound) return;
+    root.__inlineEditBound = true;
+
+    root.addEventListener("click", function (e) {
+      const codeEl = document.getElementById("mermaidCode");
+      const code = codeEl ? codeEl.value || "" : "";
+      const isFlow = isFlowchartLike(code);
+
+      const target = e && e.target ? e.target : null;
+      const hasClosest = !!(target && target.closest);
+
+      const edgeHit = hasClosest
+        ? target.closest("g.edgeLabel") || target.closest("g.edgePath")
+        : null;
+      const node = hasClosest ? target.closest("g.node") : null;
+      if (!edgeHit && !node) return;
+
+      if (!isFlow) {
+        showToast("info", "編集は Flowchart のみ対応です。", {
+          timeoutMs: 1800,
+        });
+        return;
+      }
+
+      if (edgeHit) {
+        e.preventDefault();
+        e.stopPropagation();
+        const ep = getFlowchartEdgeEndpointsFromSvg(target);
+        if (!ep) return;
+        const currentLabel =
+          edgeHit.querySelector && edgeHit.querySelector("text")
+            ? String(edgeHit.querySelector("text").textContent || "").trim()
+            : "";
+        promptTextAsync({
+          title:
+            typeof t === "function"
+              ? t("editEdgeLabelTitle")
+              : "Edit edge label",
+          value: currentLabel,
+          placeholder:
+            typeof t === "function"
+              ? t("edgeLabelPlaceholder")
+              : "Edge label (optional)",
+          hint:
+            typeof t === "function"
+              ? t("emptyMakesNoLabel") + " " + t("submitHint")
+              : "Leave empty to remove the label. Press Ctrl/Cmd+Enter to submit.",
+        }).then((next) => {
+          if (next == null) return;
+          const updated = upsertFlowchartEdge(code, ep.from, ep.to, next);
+          if (codeEl) codeEl.value = updated;
+          scheduleRenderDiagram(false);
+        });
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const nodeId = getFlowchartNodeId(node);
+      if (!nodeId) {
+        showToast("error", "ノードIDを取得できませんでした。", {
+          timeoutMs: 2200,
+        });
+        return;
+      }
+
+      if (flowEdgeEdits.addMode) {
+        if (!flowEdgeEdits.from) {
+          flowEdgeEdits.from = nodeId;
+          showToast("info", "接続先ノードを選択してください", {
+            timeoutMs: 1600,
+          });
+          return;
+        }
+        const from = flowEdgeEdits.from;
+        const to = nodeId;
+        flowEdgeEdits.from = null;
+        if (from === to) {
+          showToast("info", "同じノードは選べません", { timeoutMs: 1400 });
+          return;
+        }
+        promptTextAsync({
+          title: typeof t === "function" ? t("addEdgeTitle") : "Add edge",
+          value: "",
+          placeholder:
+            typeof t === "function"
+              ? t("edgeLabelPlaceholder")
+              : "Edge label (optional)",
+          hint: from + " → " + to,
+        }).then((label) => {
+          if (label == null) return;
+          const updated = upsertFlowchartEdge(code, from, to, label);
+          if (codeEl) codeEl.value = updated;
+          scheduleRenderDiagram(false);
+        });
+        return;
+      }
+
+      const currentLabel = getNodeLabelFromSvgNode(node);
+      promptTextAsync({
+        title:
+          typeof t === "function" ? t("editNodeLabelTitle") : "Edit node label",
+        value: currentLabel,
+        placeholder:
+          typeof t === "function" ? t("nodeLabelPlaceholder") : "Node label",
+        hint:
+          typeof t === "function"
+            ? t("submitHint")
+            : "Press Ctrl/Cmd+Enter to submit.",
+      }).then((nextLabel) => {
+        if (nextLabel == null) return;
+        const trimmed = sanitizeInlineLabel(nextLabel);
+        if (!trimmed) return;
+        setNodeLabelOnSvgNode(node, trimmed);
+        // NOTE: Avoid heavy regex-based code rewrites + rerender here (can freeze on complex diagrams).
+        // Keep this as a lightweight "visual-only" edit on the current SVG.
+        /*
+             interactiveEdits.nodeLabels[nodeId] = trimmed;
+             applyEditsToMermaidCode({ rerender: false });
+             scheduleRenderDiagram(false);
+           */
+      });
+    });
+  }
+
+  function getNodeLabelFromSvgNode(node) {
+    var textEl = node.querySelector ? node.querySelector("text") : null;
+    return (
+      textEl && textEl.textContent ? String(textEl.textContent) : ""
+    ).trim();
+  }
+
+  function setNodeLabelOnSvgNode(node, label) {
+    var svgNS = "http://www.w3.org/2000/svg";
+    var textEls = node.querySelectorAll ? node.querySelectorAll("text") : [];
+    for (var i = 0; i < textEls.length; i++) {
+      var textEl = textEls[i];
+      var tspans = textEl.querySelectorAll
+        ? Array.prototype.slice.call(textEl.querySelectorAll("tspan"))
+        : [];
+      if (!tspans.length) {
+        textEl.textContent = label;
+        continue;
+      }
+      var template = tspans[0];
+      var x = template.getAttribute("x");
+      var dy = template.getAttribute("dy") || "1.2em";
+      for (var j = 0; j < tspans.length; j++) tspans[j].remove();
+      var lines = String(label).split("\r").join("").split("\n");
+      for (var k = 0; k < lines.length; k++) {
+        var tspan = document.createElementNS(svgNS, "tspan");
+        if (x != null) tspan.setAttribute("x", x);
+        if (k > 0) tspan.setAttribute("dy", dy);
+        tspan.textContent = lines[k];
+        textEl.appendChild(tspan);
+      }
+    }
+  }
+
+  function applyResponsiveLayout(rawCode) {
+    const normalized = (rawCode || "").trim();
+    if (!normalized) return rawCode;
+
+    const mode = getLayoutMode();
+    const target = mode === "lr" ? "LR" : "TD";
+    const firstInfo = getFirstDiagramLineInfo(normalized);
+    const firstLine = firstInfo.line;
+
+    // flowchart/graph (Mermaid v10+)
+    if (/^(flowchart|graph)\b/i.test(firstLine)) {
+      if (/^(flowchart|graph)\s+(TB|TD|BT|RL|LR)\b/im.test(normalized)) {
+        return normalized.replace(
+          /^(flowchart|graph)\s+(TB|TD|BT|RL|LR)\b/im,
+          function (_, kw) {
+            return kw + " " + target;
+          }
+        );
+      }
+      return normalized.replace(/^(flowchart|graph)\b/im, function (_, kw) {
+        return kw + " " + target;
+      });
+    }
+
+    // stateDiagram-v2 uses "direction LR" inside the block
+    if (/^stateDiagram(-v2)?\b/i.test(firstLine)) {
+      if (/^\s*direction\s+(TB|TD|BT|RL|LR)\b/im.test(normalized)) {
+        return normalized.replace(
+          /^\s*direction\s+(TB|TD|BT|RL|LR)\b/im,
+          "direction " + target
+        );
+      }
+      const lines = normalized.split(/\r?\n/);
+      const insertAt =
+        firstInfo.index >= 0 ? Math.min(lines.length, firstInfo.index + 1) : 1;
+      lines.splice(insertAt, 0, "direction " + target);
+      return lines.join("\n");
+    }
+
+    return rawCode;
+  }
+
+  function getFirstDiagramLineInfo(code) {
+    const lines = String(code || "").split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("%%")) continue; // comments / init directive
+      return { line: trimmed, index: i };
+    }
+    return { line: "", index: -1 };
+  }
+
+  function getMermaidConfig(theme) {
+    const selected = theme || "dark";
+    const palette = getPalette();
+    const codeEl = document.getElementById("mermaidCode");
+    const isFlow = isFlowchartLike(codeEl ? codeEl.value || "" : "");
+
+    function pickTextColor(hex) {
+      const raw = String(hex || "")
+        .trim()
+        .toLowerCase();
+      const m = raw.match(/^#([0-9a-f]{6})$/i);
+      if (!m) return "#111827";
+      const n = parseInt(m[1], 16);
+      const r = (n >> 16) & 255;
+      const g = (n >> 8) & 255;
+      const b = n & 255;
+      const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      return luminance < 0.55 ? "#ffffff" : "#111827";
+    }
+
+    const nodeText = pickTextColor(palette.node);
+    const paletteVars = isFlow
+      ? {
+          primaryColor: palette.node,
+          primaryBorderColor: palette.node,
+          lineColor: palette.edge,
+          primaryTextColor: nodeText,
+        }
+      : {};
+    const themeCSS = isFlow
+      ? ".node rect,.node polygon,.node circle,.node ellipse,.node path{fill:" +
+        palette.node +
+        " !important;stroke:" +
+        palette.node +
+        " !important;}" +
+        ".node .label text,.nodeLabel{fill:" +
+        nodeText +
+        " !important;}" +
+        ".edgePath path,.flowchart-link{stroke:" +
+        palette.edge +
+        " !important;}" +
+        "marker path,.arrowheadPath{fill:" +
+        palette.edge +
+        " !important;stroke:" +
+        palette.edge +
+        " !important;}"
+      : "";
+    const commonThemeVariables = {
+      fontFamily: "Arial, system-ui, -apple-system, Segoe UI, sans-serif",
+      ...paletteVars,
+    };
+
+    const normalized = normalizeDiagramTheme(selected);
+    return {
+      startOnLoad: false,
+      theme: normalized,
+      themeVariables: commonThemeVariables,
+      themeCSS: themeCSS,
+      flowchart: {
+        htmlLabels: false,
+      },
+    };
+  }
+
+  function isFlowchartLike(code) {
+    const firstLine = getFirstDiagramLineInfo(code).line;
+    return /^(flowchart|graph)\b/i.test(firstLine);
+  }
+
+  function showLoading(show, text = "Loading...") {
+    const overlay = document.getElementById("loadingOverlay");
+    const txt = document.getElementById("loadingText");
+    if (show) {
+      txt.innerText = text;
+      overlay.classList.remove("hidden");
+    } else {
+      overlay.classList.add("hidden");
+    }
+  }
+
+  let stickyCanvasErrorToast = null;
+  function showCanvasError(message) {
+    clearCanvasError();
+    stickyCanvasErrorToast = showToast("error", String(message || ""), {
+      timeoutMs: 0,
+    });
+  }
+  function clearCanvasError() {
+    if (stickyCanvasErrorToast && stickyCanvasErrorToast.parentNode)
+      stickyCanvasErrorToast.remove();
+    stickyCanvasErrorToast = null;
+  }
+
+  function applyTemplate(kind) {
+    const lang = typeof getCurrentLang === "function" ? getCurrentLang() : "ja";
+    const promptEl = document.getElementById("userInput");
+    const typeEl = document.getElementById("diagramTypeSelect");
+    const codeEl = document.getElementById("mermaidCode");
+    if (!promptEl || !typeEl) return;
+
+    const templates = {
+      flowchart: {
+        type: "flowchart TD",
+        ja: "ユーザー登録のフローを図にしてください。\n入力 → 確認 → 保存 → 完了。エラー時は入力に戻る。",
+        en: "Draw a user signup flow.\nInput → Confirm → Save → Done. On error, go back to Input.",
+        code: "flowchart TD\n  A[Start] --> B{Valid?}\n  B -->|Yes| C[Save]\n  C --> D[Done]\n  B -->|No| E[Fix input]\n  E --> B",
+      },
+      sequence: {
+        type: "sequenceDiagram",
+        ja: "ログイン処理のシーケンス図。\n登場人物: User, Browser, API。\n成功/失敗の分岐も入れて。",
+        en: "Sequence diagram for login.\nParticipants: User, Browser, API.\nInclude success/failure branches.",
+        code: "sequenceDiagram\n  participant U as User\n  participant B as Browser\n  participant A as API\n  U->>B: Enter credentials\n  B->>A: POST /login\n  alt success\n    A-->>B: 200 OK (token)\n    B-->>U: Logged in\n  else failure\n    A-->>B: 401 Unauthorized\n    B-->>U: Show error\n  end",
+      },
+      mindmap: {
+        type: "mindmap",
+        ja: "新規プロジェクト計画のマインドマップ。\n目的 / タスク / リスク / マイルストーン。",
+        en: "Mindmap for a new project plan.\nGoals / Tasks / Risks / Milestones.",
+        code: "mindmap\n  root((Project))\n    Goals\n      Success metrics\n    Tasks\n      MVP\n      Launch\n    Risks\n      Schedule\n      Scope\n    Milestones\n      Week 1\n      Week 4\n      Week 8",
+      },
+      gantt: {
+        type: "gantt",
+        ja: "プロジェクトの簡単なガントチャートを作成してください。\nフェーズと担当、期間も入れて。",
+        en: "Create a simple project Gantt chart.\nInclude phases, owners, and dates.",
+        code: "gantt\n  title Project Plan\n  dateFormat  YYYY-MM-DD\n  section Phase 1\n  Research         :a1, 2025-01-01, 7d\n  Design           :a2, after a1, 5d\n  section Phase 2\n  Implementation   :b1, after a2, 10d\n  Testing          :b2, after b1, 5d",
+      },
+    };
+
+    const t = templates[kind] || templates.flowchart;
+    typeEl.value = t.type;
+    promptEl.value = lang === "en" ? t.en : t.ja;
+    if (typeof togglePanel === "function") togglePanel(true);
+    if (typeof setSideTab === "function") setSideTab("create");
+    promptEl.focus();
+    syncAppStateFromInputs();
+    if (codeEl && t.code) {
+      codeEl.value = t.code;
+      Promise.resolve(renderDiagram(false)).catch(() => {});
+    }
+    const msg =
+      lang === "en"
+        ? "Template applied. Edit if needed, then click Generate."
+        : "テンプレートをセットしました。必要なら編集して「生成する」を押してください。";
+    showToast("success", msg);
+  }
+
+  function downloadMD() {
+    const code = document.getElementById("mermaidCode").value;
+    if (!code) return;
+    downloadFile(code, "diagram.md", "text/markdown");
+  }
+  function downloadSVG() {
+    const svgElement = document.querySelector("#diagram-output svg");
+    if (!svgElement) {
+      showToast("info", "図が描画されていません");
+      return;
+    }
+    const svgData = new XMLSerializer().serializeToString(svgElement);
+    downloadFile(svgData, "diagram.svg", "image/svg+xml;charset=utf-8");
+  }
+  async function copyTextToClipboard(text) {
+    const value = String(text == null ? "" : text);
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "true");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (!ok) throw new Error("copy failed");
+  }
+
+  function buildGeminiImagePrompt(mermaidCode) {
+    // Backward-compatible wrapper; actual prompt is built by `buildGeminiImagePromptCompiled`.
+    const code = String(mermaidCode == null ? "" : mermaidCode);
+    const styleId =
+      localStorage.getItem("diagram.imagePrompt.styleId") || "business";
+    const styleCustom =
+      localStorage.getItem("diagram.imagePrompt.custom." + styleId) || "";
+    const extraNegatives =
+      localStorage.getItem("diagram.imagePrompt.negatives") || "";
+    const userEl = document.getElementById("userInput");
+    const userText = userEl ? String(userEl.value || "").trim() : "";
+    return buildGeminiImagePromptCompiled(
+      code,
+      { styleId, styleCustom, extraNegatives },
+      userText
+    );
+  }
+
+  function extractExplicitTitleFromMermaid(code) {
+    const src = String(code == null ? "" : code).replace(/\r/g, "");
+    const patterns = [
+      /^\s*(?:%%\s*)?title\s*:\s*["']?(.+?)["']?\s*$/gim,
+      /^\s*(?:%%\s*)?title\s+["']?(.+?)["']?\s*$/gim,
+    ];
+    for (const re of patterns) {
+      const m = re.exec(src);
+      if (m && m[1]) {
+        const t = String(m[1]).trim();
+        if (t) return t;
+      }
+    }
+    return null;
+  }
+
+  function extractTitleFromMermaid(code) {
+    return extractExplicitTitleFromMermaid(code) || "プロセス構造図";
+  }
+
+  function extractTitleFromUserText(userText) {
+    const src = String(userText == null ? "" : userText).replace(/\r/g, "");
+    if (!src.trim()) return null;
+
+    // Prefer explicit "title:" / "タイトル:" declaration in the user input.
+    const m1 = /^\s*(?:title|タイトル)\s*[:：]\s*(.+?)\s*$/gim.exec(src);
+    if (m1 && m1[1]) {
+      const t = String(m1[1]).trim();
+      if (t) return t;
+    }
+
+    // Otherwise, use the first non-empty line.
+    const first =
+      src
+        .split("\n")
+        .map((x) => x.trim())
+        .filter(Boolean)[0] || "";
+    if (!first) return null;
+
+    // Strip leading markdown bullets/headers if present.
+    const cleaned = first.replace(/^[-*#]+\s*/, "").trim();
+    if (!cleaned) return null;
+
+    // Soft cap to avoid absurdly long slide headers.
+    const max = 60;
+    return cleaned.length > max ? cleaned.slice(0, max) : cleaned;
+  }
+
+  function deriveSlideTitle(mermaidCode, userText) {
+    const explicit = extractExplicitTitleFromMermaid(mermaidCode);
+    if (explicit) return explicit;
+    const fromUser = extractTitleFromUserText(userText);
+    if (fromUser) return fromUser;
+    return "プロセス構造図";
+  }
+
+  function extractMermaidFromText(text) {
+    const src = String(text == null ? "" : text).replace(/\r/g, "");
+    const fence = /```mermaid\s*([\s\S]*?)\s*```/i.exec(src);
+    if (fence && fence[1]) return String(fence[1]).trim();
+
+    const keywords = [
+      "flowchart",
+      "graph",
+      "sequenceDiagram",
+      "gantt",
+      "stateDiagram-v2",
+      "stateDiagram",
+      "classDiagram",
+      "erDiagram",
+      "journey",
+      "mindmap",
+      "timeline",
+      "pie",
+      "gitGraph",
+      "C4Context",
+      "C4Container",
+      "C4Component",
+      "C4Dynamic",
+      "C4Deployment",
+    ];
+    const re = new RegExp(
+      "(^|\\n)\\s*(" +
+        keywords
+          .map((k) => k.replace(/[-/\\^$*+?.()|[\\]{}]/g, "\\$&"))
+          .join("|") +
+        ")\\b",
+      "i"
+    );
+    const m = re.exec(src);
+    if (m && typeof m.index === "number") {
+      const start = src.indexOf(m[2], m.index);
+      if (start >= 0) return src.slice(start).trim();
+    }
+    return src.trim();
+  }
+
+  function extractDirectionText(code) {
+    const src = String(code == null ? "" : code).replace(/\r/g, "");
+    const first =
+      src
+        .split("\n")
+        .map((x) => x.trim())
+        .filter(Boolean)[0] || "";
+    const flow = /^(flowchart|graph)\s+([A-Za-z]{2})\b/.exec(first);
+    if (flow && flow[2]) {
+      const dir = String(flow[2]).toUpperCase();
+      switch (dir) {
+        case "LR":
+          return "from left to right";
+        case "RL":
+          return "from right to left";
+        case "TB":
+          return "from top to bottom";
+        case "TD":
+          return "from top to bottom";
+        case "BT":
+          return "from bottom to top";
+      }
+    }
+    const stateDir = /(^|\n)\s*direction\s+([A-Za-z]{2})\b/i.exec(src);
+    if (stateDir && stateDir[2]) {
+      const dir = String(stateDir[2]).toUpperCase();
+      switch (dir) {
+        case "LR":
+          return "from left to right";
+        case "RL":
+          return "from right to left";
+        case "TB":
+          return "from top to bottom";
+        case "TD":
+          return "from top to bottom";
+        case "BT":
+          return "from bottom to top";
+      }
+    }
+    return "with a clear directional flow";
+  }
+
+  function extractFlowDirectionText(code) {
+    return extractDirectionText(code);
+  }
+
+  function stripOuterQuotes(text) {
+    let s = String(text == null ? "" : text).trim();
+    if (
+      (s.startsWith('"') && s.endsWith('"')) ||
+      (s.startsWith("'") && s.endsWith("'"))
+    ) {
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  }
+
+  function extractFlowchartNodes(code) {
+    const src = String(code == null ? "" : code).replace(/\r/g, "");
+    const lines = src.split("\n");
+    const out = [];
+    const openRe = /(^|\s)([A-Za-z0-9_]+)\s*(\[\[|\[\/|\[|\(\(|\(\[|\(|\{)/g;
+    const closeMap = {
+      "[[": "]]",
+      "[/": "/]",
+      "[": "]",
+      "((": "))",
+      "([": "])",
+      "(": ")",
+      "{": "}",
+    };
+    for (const line0 of lines) {
+      const line = String(line0);
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (/^(classDef|class|style|linkStyle)\b/.test(trimmed)) continue;
+      if (/^%%/.test(trimmed)) continue;
+
+      let m;
+      openRe.lastIndex = 0;
+      while ((m = openRe.exec(line))) {
+        const id = m[2];
+        const open = m[3];
+        const close = closeMap[open];
+        const start = openRe.lastIndex;
+        const end = close ? line.indexOf(close, start) : -1;
+        if (end === -1) continue;
+        const raw = line.slice(start, end).trim();
+        const label = stripOuterQuotes(raw).replace(/\\n/g, " ").trim();
+        out.push({ id, label });
+        openRe.lastIndex = end + close.length;
+      }
+    }
+    return out;
+  }
+
+  function iconForNodeLabel(label, id) {
+    const s = (String(label || "") + " " + String(id || "")).toLowerCase();
+    const has = (re) => re.test(s);
+    if (has(/\b(start|begin)\b|開始/)) return "a start/play icon";
+    if (has(/\b(end|done|finish)\b|完了|終了/)) return "a checkmark/done icon";
+    if (has(/\buser|client\b|ユーザー|利用者/))
+      return "a person icon for the user";
+    if (has(/\b(system|server|backend)\b|システム/))
+      return "a gear icon for the system";
+    if (has(/\bregex\b|正規表現/))
+      return "a magnifying glass icon (regex extraction)";
+    if (has(/\bdb\b|\bdatabase\b|データベース/))
+      return "a database cylinder icon";
+    if (has(/\bstyle\b|スタイル/)) return "a paint palette icon (style module)";
+    if (has(/\bparam\b|parameter|パラメータ/))
+      return "a sliders icon (parameters)";
+    if (has(/\bnegative\b|constraint|制約|禁止|ネガ/))
+      return "a ban icon (negative constraints)";
+    if (has(/\bbuilder\b|compile|compiler|prompt|プロンプト|組立/))
+      return "a blocks/documents icon (prompt builder)";
+    // Avoid treating "Gemini/Google site" as an AI/LLM concept.
+    if (has(/\bllm\b|\bgpt\b|\bcompiler\b/))
+      return "an AI chip icon (LLM compiler)";
+    if (has(/\bimage\b|imggen|生成|画像/))
+      return "an image/photo icon (image generator)";
+    if (has(/security|secure|csp|ブロック|高セキュリティ|銀行|鍵|ロック/))
+      return "a shield/lock icon (security)";
+    if (has(/manual|hand|手動|編集/)) return "a hand/edit icon (manual action)";
+    if (has(/site|web|browser|サイト|web|ブラウザ/))
+      return "a browser/window icon (website)";
+    return "a simple geometric node icon";
+  }
+
+  function extractStateDiagramLabels(code) {
+    const src = String(code == null ? "" : code).replace(/\r/g, "");
+    const lines = src.split("\n");
+    const aliasToLabel = new Map();
+    const labels = [];
+
+    for (const line0 of lines) {
+      const line = String(line0).trim();
+      if (!line) continue;
+      // state "Label" as ID {
+      const m = /^state\s+"([^"]+)"\s+as\s+([A-Za-z0-9_]+)\b/i.exec(line);
+      if (m && m[1] && m[2]) {
+        const lbl = String(m[1]).trim();
+        const id = String(m[2]).trim();
+        if (lbl) {
+          aliasToLabel.set(id, lbl);
+          labels.push(lbl);
+        }
+        continue;
+      }
+    }
+
+    for (const line0 of lines) {
+      const line = String(line0).trim();
+      if (!line) continue;
+      if (/^state\s+\"/.test(line)) continue;
+      if (/^direction\b/i.test(line)) continue;
+
+      const arrow = /(.+?)\s*-->\s*(.+?)(?:\s*:\s*(.+))?$/.exec(line);
+      if (!arrow) continue;
+      const fromRaw = String(arrow[1]).trim();
+      const toRaw = String(arrow[2]).trim();
+      const from =
+        fromRaw === "[*]" ? "" : aliasToLabel.get(fromRaw) || fromRaw;
+      const to = toRaw === "[*]" ? "" : aliasToLabel.get(toRaw) || toRaw;
+      if (from) labels.push(from);
+      if (to) labels.push(to);
+    }
+
+    // Unique, keep order
+    const seen = new Set();
+    const out = [];
+    for (const x of labels) {
+      const s = String(x).trim();
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+      if (out.length >= 30) break;
+    }
+    return out;
+  }
+
+  function buildIconDescriptionFromMermaid(code) {
+    const nodes = extractFlowchartNodes(code);
+    if (!nodes.length) {
+      const stateLabels = extractStateDiagramLabels(code);
+      if (!stateLabels.length)
+        return "simple abstract icons for each step (no text labels)";
+      const seen = new Set();
+      const parts = [];
+      for (const lbl of stateLabels) {
+        const icon = iconForNodeLabel(lbl, "");
+        if (seen.has(icon)) continue;
+        seen.add(icon);
+        parts.push(icon);
+        if (parts.length >= 8) break;
+      }
+      return parts.length
+        ? parts.join(", ")
+        : "simple abstract icons for each step (no text labels)";
+    }
+    const seen = new Set();
+    const parts = [];
+    for (const n of nodes) {
+      const icon = iconForNodeLabel(n.label, n.id);
+      if (seen.has(icon)) continue;
+      seen.add(icon);
+      parts.push(icon);
+      if (parts.length >= 8) break;
+    }
+    return parts.length
+      ? parts.join(", ")
+      : "simple abstract icons for each step (no text labels)";
+  }
+
+  function buildGeminiImagePromptCompiled(
+    mermaidCode,
+    settings,
+    userDescription
+  ) {
+    const code = extractMermaidFromText(mermaidCode).trim();
+    const opts = settings && typeof settings === "object" ? settings : {};
+    const langSetting = String(opts.lang || "auto");
+    const uiLang = localStorage.getItem(UI_LANG_KEY) || "ja";
+    const lang =
+      langSetting === "ja" || langSetting === "en"
+        ? langSetting
+        : uiLang === "en"
+        ? "en"
+        : "ja";
+    const styleId = String(opts.styleId || "business");
+    const style = IMAGE_STYLE_MODULES[styleId] || IMAGE_STYLE_MODULES.business;
+    const slideTitle = deriveSlideTitle(code, userDescription);
+    const dirText = extractFlowDirectionText(code);
+    const iconDesc = buildIconDescriptionFromMermaid(code);
+    const intent = String(
+      userDescription == null ? "" : userDescription
+    ).trim();
+
+    const styleText = String(style.prompt || "").trim();
+    const styleCustom = String(opts.styleCustom || "").trim();
+    const mergedStyle = styleCustom ? styleText + " " + styleCustom : styleText;
+
+    const maxMermaidChars = 9000;
+    const mermaidForPrompt =
+      code.length > maxMermaidChars
+        ? code.slice(0, maxMermaidChars) + "\n... (truncated)"
+        : code;
+
+    const baseNegatives = [
+      "No gibberish text. No random placeholder words.",
+      "Do NOT render any prompt/meta labels such as: INPUT DESCRIPTION, INPUT DESCRIPTION SUMMARY, STRUCTURE SOURCE, LANGUAGE ENFORCEMENT, NEGATIVE CONSTRAINTS, TITLE RULE, Icons suggestion, Slide layout.",
+      "Do NOT render the instruction text of this prompt. Render only content derived from the Mermaid diagram and the user intent (topic facts), not the tool instructions.",
+      "Do not use generic titles like 'Future of AI'.",
+      "No blurry text. No tiny unreadable text.",
+    ];
+    if (lang === "ja") {
+      baseNegatives.push(
+        "No English text. Do not translate Japanese into English."
+      );
+      baseNegatives.push(
+        "Avoid URLs and long Latin strings unless they appear in the Mermaid diagram or user input as required content."
+      );
+    } else {
+      baseNegatives.push(
+        "No Japanese text unless it comes verbatim from the input. Do not translate Japanese into English without permission."
+      );
+    }
+    const styleNeg = String(IMAGE_STYLE_NEGATIVES[styleId] || "").trim();
+    const extraNeg = String(opts.extraNegatives || "").trim();
+    const negJoined = baseNegatives
+      .concat(styleNeg ? [styleNeg] : [])
+      .concat(extraNeg ? [extraNeg] : [])
+      .join(" ");
+
+    const suffix = "high resolution, 8k, sharp focus, aesthetic composition";
+
+    return [
+      `A high-quality ${mergedStyle}`,
+      intent
+        ? `REFERENCE (for understanding only; do NOT render this text verbatim): """\n${intent}\n"""`
+        : "",
+      `REFERENCE (Mermaid code for understanding only; do NOT render this text verbatim): """\n${mermaidForPrompt}\n"""`,
+      `DIAGRAM FIDELITY (highest priority): The Mermaid code is the blueprint. Render a clean diagram/infographic that matches the Mermaid structure exactly: include every node and every edge; preserve branches/merges; preserve subgraph groupings as separate containers with titles; follow the declared direction (${dirText}).`,
+      `TEXT FIDELITY: Copy node labels, decision labels, and subgraph titles from the Mermaid code VERBATIM. Do not translate, do not paraphrase, do not summarize Mermaid labels. Do not invent any new labels that are not present in the Mermaid or the user intent.`,
+      `Text rendering: render readable labels for nodes, decisions, and subgraph titles. Use ${
+        lang === "ja" ? "Japanese" : "English"
+      } as the primary language.`,
+      `MANGA STYLE ADAPTER (important): Apply manga ink aesthetics to the diagram (linework, screentone shading, panel borders), but keep it strictly a diagram. No characters, no narrative scenes, no product photos, no cinematic perspective. Speech bubbles may be used ONLY for the header title; all other text must be inside simple diagram boxes.`,
+      `Slide layout: wide 16:9. Use a clean slide composition: (1) a prominent header title '${slideTitle}', (2) a central diagram area that follows the Mermaid structure, and (3) optional side panels with short bullet points summarizing only topic facts from the user intent (e.g., 概要 / 要点). Do not add facts not present in the Mermaid or user intent. Do NOT use headings like "INPUT DESCRIPTION" or "SUMMARY".`,
+      `Visual system: consistent icon set, consistent stroke weight, clear arrowheads, aligned grid, generous whitespace. Icons suggestion: ${iconDesc}.`,
+      lang === "ja"
+        ? `LANGUAGE ENFORCEMENT: Output language is Japanese. Do not translate Japanese to English. If the model accidentally outputs text, it must be Japanese.`
+        : `LANGUAGE ENFORCEMENT: Output language is English. If the model accidentally outputs text, it must be English (except the main title which must be exact).`,
+      `TITLE RULE: The slide must prominently display the header title exactly as provided: '${slideTitle}'.`,
+      `NEGATIVE CONSTRAINTS: ${negJoined}`,
+      suffix,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  let lastExternalOpenAt = 0;
+  let lastExternalOpenUrl = "";
+  function openInNewTab(url) {
+    const u = String(url || "");
+    const now = Date.now();
+    if (u && lastExternalOpenUrl === u && now - lastExternalOpenAt < 1500)
+      return;
+    lastExternalOpenAt = now;
+    lastExternalOpenUrl = u;
+
+    const ua =
+      navigator && navigator.userAgent ? String(navigator.userAgent) : "";
+    const isAndroid = /Android/i.test(ua);
+
+    // 1) Try window.open first (some Android WebViews ignore programmatic <a>.click()).
+    try {
+      const w = window.open(u, "_blank", "noopener,noreferrer");
+      if (w) {
+        try {
+          w.opener = null;
+        } catch (_) {}
+        return;
+      }
+    } catch (_) {}
+
+    // 2) Fallback: synthetic anchor click.
+    try {
+      const a = document.createElement("a");
+      a.href = u;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (!isAndroid) return;
+    } catch (_) {}
+
+    // 3) Last resort (Android): same-tab navigation if popups/new tabs are blocked.
+    try {
+      window.location.assign(u);
+    } catch (_) {}
+  }
+
+  let geminiImagePromptBusy = false;
+  async function copyGeminiImagePrompt() {
+    if (geminiImagePromptBusy) return;
+    geminiImagePromptBusy = true;
+    const codeEl = document.getElementById("mermaidCode");
+    const code = codeEl ? String(codeEl.value || "").trim() : "";
+    if (!code) {
+      showToast("info", t("geminiImageEmpty"));
+      geminiImagePromptBusy = false;
+      return;
+    }
+
+    try {
+      const settings = await promptImagePromptSettingsAsync();
+      if (!settings) return;
+
+      const userEl = document.getElementById("userInput");
+      const userText = userEl ? String(userEl.value || "").trim() : "";
+      const prompt = buildGeminiImagePromptCompiled(code, settings, userText);
+      await copyTextToClipboard(prompt);
+      showToast("success", t("geminiImageCopied"));
+
+      confirmAsyncWithOkAction(t("geminiOpenConfirm"), "Gemini", () => {
+        openInNewTab("https://gemini.google.com/app");
+        // IMPORTANT: avoid same-tab navigation (embedded contexts may reject).
+      });
+    } catch (e) {
+      showToast(
+        "error",
+        "コピーに失敗しました: " + (e && e.message ? e.message : e)
+      );
+      return;
+    } finally {
+      geminiImagePromptBusy = false;
+    }
+  }
+
+  async function downloadPNG() {
+    const svgElement = document.querySelector("#diagram-output svg");
+    if (!svgElement) {
+      showToast("info", "図が描画されていません");
+      return;
+    }
+
+    const theme = getDiagramTheme();
+    const isLightUi = document.body.classList.contains("ui-light");
+    const bgColor = isLightUi ? "#ffffff" : "#0b0d14";
+
+    const { svgData, width, height } = getSvgForExport(svgElement, theme);
+    const exportScale = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+
+    function makeCanvas() {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      canvas.width = Math.max(1, Math.round(width * exportScale));
+      canvas.height = Math.max(1, Math.round(height * exportScale));
+      ctx.setTransform(exportScale, 0, 0, exportScale, 0, 0);
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, width, height);
+      return { canvas, ctx };
+    }
+
+    function triggerPngDownload(canvas) {
+      const link = document.createElement("a");
+      link.download = "diagram.png";
+      link.href = canvas.toDataURL("image/png");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // Fast path: rasterize via <img>. If canvas is tainted (e.g. external fonts), fall back to canvg.
+    try {
+      const { canvas, ctx } = makeCanvas();
+      await rasterizeSvgWithImage(ctx, svgData, width, height);
+      triggerPngDownload(canvas);
+      return;
+    } catch (e) {
+      try {
+        const { canvas, ctx } = makeCanvas();
+        const canvg = getCanvg();
+        if (!canvg) throw e;
+        const v = await canvg.from(ctx, svgData, {
+          ignoreAnimation: true,
+          ignoreMouse: true,
+          useCORS: true,
+        });
+        await v.render();
+        triggerPngDownload(canvas);
+        return;
+      } catch (e2) {
+        console.error("PNG export failed:", e2);
+        showToast(
+          "error",
+          "PNG出力に失敗しました: " + (e2 && e2.message ? e2.message : e2)
+        );
+        return;
+      }
+    }
+  }
+
+  function getSvgForExport(svgElement, theme) {
+    const clone = svgElement.cloneNode(true);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+
+    // Force safe fonts (avoid external font loads -> tainted canvas)
+    const style = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "style"
+    );
+    const defaultFont =
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', 'Meiryo', Arial, sans-serif";
+    const isDarkBg = theme === "dark";
+    const textColor = isDarkBg ? "#e5e7eb" : "#111827";
+    style.textContent =
+      "*{font-family:" +
+      defaultFont +
+      " !important;}" +
+      "text,tspan{fill:" +
+      textColor +
+      " !important; stroke:none !important; opacity:1 !important;}" +
+      "foreignObject *{color:" +
+      textColor +
+      " !important; font-family:" +
+      defaultFont +
+      " !important;}";
+    clone.insertBefore(style, clone.firstChild);
+
+    // Inline computed styles for geometry (stroke/fill) so exported SVG doesn't depend on external CSS.
+    inlineSvgGeometryStyles(svgElement, clone);
+    inlineSvgTextStyles(svgElement, clone, textColor);
+    bringTextToFront(clone);
+
+    const vb =
+      svgElement.viewBox && svgElement.viewBox.baseVal
+        ? svgElement.viewBox.baseVal
+        : null;
+    let width = vb ? vb.width : 0;
+    let height = vb ? vb.height : 0;
+    if (!(width > 0 && height > 0)) {
+      try {
+        const bbox = svgElement.getBBox();
+        width = bbox.width;
+        height = bbox.height;
+        if (!clone.getAttribute("viewBox"))
+          clone.setAttribute(
+            "viewBox",
+            String(bbox.x) +
+              " " +
+              String(bbox.y) +
+              " " +
+              String(bbox.width) +
+              " " +
+              String(bbox.height)
+          );
+      } catch (_) {}
+    }
+    if (!(width > 0 && height > 0)) {
+      width = 1200;
+      height = 800;
+      if (!clone.getAttribute("viewBox"))
+        clone.setAttribute(
+          "viewBox",
+          "0 0 " + String(width) + " " + String(height)
+        );
+    }
+
+    clone.setAttribute("width", String(width));
+    clone.setAttribute("height", String(height));
+    return {
+      svgData: new XMLSerializer().serializeToString(clone),
+      width,
+      height,
+    };
+  }
+
+  function inlineSvgGeometryStyles(srcSvg, dstSvg) {
+    if (!srcSvg || !dstSvg) return;
+
+    // Mermaid (and similar diagram generators) primarily use these geometry elements.
+    const selector =
+      "rect, circle, ellipse, path, polygon, polyline, line, use, marker";
+    const srcNodes = srcSvg.querySelectorAll(selector);
+    const dstNodes = dstSvg.querySelectorAll(selector);
+    const len = Math.min(srcNodes.length, dstNodes.length);
+
+    // Use inline styles with !important to override Mermaid's internal <style> rules
+    // (which may rely on external CSS variables and break once serialized to a standalone SVG).
+    const props = [
+      "fill",
+      "fill-opacity",
+      "stroke",
+      "stroke-opacity",
+      "stroke-width",
+      "stroke-dasharray",
+      "stroke-linecap",
+      "stroke-linejoin",
+      "stroke-miterlimit",
+      "opacity",
+    ];
+
+    for (let i = 0; i < len; i++) {
+      const src = srcNodes[i];
+      const dst = dstNodes[i];
+      const cs = window.getComputedStyle(src);
+      if (!cs) continue;
+
+      for (const prop of props) {
+        const val = cs.getPropertyValue(prop);
+        if (val == null) continue;
+        const trimmed = String(val).trim();
+        if (!trimmed || trimmed === "auto") continue;
+        dst.setAttribute(prop, trimmed);
+        if (dst.style && typeof dst.style.setProperty === "function") {
+          dst.style.setProperty(prop, trimmed, "important");
+        }
+      }
+    }
+  }
+
+  function inlineSvgTextStyles(srcSvg, dstSvg, fallbackTextColor) {
+    if (!srcSvg || !dstSvg) return;
+    const srcTexts = srcSvg.querySelectorAll("text,tspan");
+    const dstTexts = dstSvg.querySelectorAll("text,tspan");
+    const len = Math.min(srcTexts.length, dstTexts.length);
+    const defaultFont =
+      "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', 'Meiryo', Arial, sans-serif";
+    for (let i = 0; i < len; i++) {
+      const src = srcTexts[i];
+      const dst = dstTexts[i];
+      const cs = window.getComputedStyle(src);
+      if (!cs) continue;
+      const fallbackFill = fallbackTextColor || "#e2e8f0";
+      const map = {
+        fill: cs.getPropertyValue("fill") || fallbackFill,
+        "font-size": cs.getPropertyValue("font-size"),
+        "font-family": defaultFont,
+        "font-weight": cs.getPropertyValue("font-weight"),
+        "font-style": cs.getPropertyValue("font-style"),
+        "text-anchor": cs.getPropertyValue("text-anchor"),
+        "dominant-baseline": cs.getPropertyValue("dominant-baseline"),
+        stroke: cs.getPropertyValue("stroke"),
+        "stroke-width": cs.getPropertyValue("stroke-width"),
+      };
+      for (const key in map) {
+        const val = map[key];
+        if (!val) continue;
+        const trimmed = String(val).trim();
+        if (!trimmed) continue;
+        dst.setAttribute(key, trimmed);
+        if (dst.style && typeof dst.style.setProperty === "function") {
+          dst.style.setProperty(key, trimmed, "important");
+        }
+      }
+    }
+  }
+
+  function bringTextToFront(svg) {
+    if (!svg || !svg.querySelectorAll) return;
+    const texts = svg.querySelectorAll("text, tspan");
+    if (!texts.length) return;
+    texts.forEach((el) => {
+      const parent = el.parentNode;
+      if (parent && parent.appendChild) parent.appendChild(el);
+    });
+  }
+
+  function getCanvg() {
+    const CanvgGlobal = window.Canvg || (window.canvg && window.canvg.Canvg);
+    if (!CanvgGlobal) return null;
+    if (typeof CanvgGlobal.from === "function") return CanvgGlobal;
+    if (typeof CanvgGlobal.fromString === "function") {
+      return {
+        from: async (ctx, svg, opts) => CanvgGlobal.fromString(ctx, svg, opts),
+      };
+    }
+    return null;
+  }
+
+  function rasterizeSvgWithImage(ctx, svgData, width, height) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const svgBlob = new Blob([svgData], {
+        type: "image/svg+xml;charset=utf-8",
+      });
+      const url = URL.createObjectURL(svgBlob);
+      img.onload = function () {
+        try {
+          ctx.drawImage(img, 0, 0, width, height);
+          URL.revokeObjectURL(url);
+          resolve();
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          reject(e);
+        }
+      };
+      img.onerror = function (e) {
+        URL.revokeObjectURL(url);
+        reject(e);
+      };
+      img.src = url;
+    });
+  }
+  function downloadFile(content, filename, type) {
+    const blob = new Blob([content], { type: type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // --- History (User Properties) ---
+  const HISTORY_PAGE_SIZE = 10;
+  let historyNextOffset = 0;
+  let historyHasMore = false;
+  let historyOpCount = 0;
+  function beginHistoryOp(messageKey, rowId = null) {
+    historyOpCount++;
+    setHistoryBusy(true, messageKey);
+    if (rowId != null) setHistoryRowBusy(rowId, true, messageKey);
+    return () => {
+      if (rowId != null) setHistoryRowBusy(rowId, false);
+      historyOpCount = Math.max(0, historyOpCount - 1);
+      if (historyOpCount === 0) setHistoryBusy(false);
+    };
+  }
+  function setHistoryBusy(busy, messageKey) {
+    const status = document.getElementById("historyStatus");
+    const statusText = document.getElementById("historyStatusText");
+    const overlay = document.getElementById("historyOverlay");
+    const overlayText = document.getElementById("historyOverlayText");
+    const refreshBtn = document.getElementById("refreshHistoryBtn");
+    const clearBtn = document.getElementById("clearHistoryBtn");
+    const loadMoreBtn = document.getElementById("historyLoadMoreBtn");
+
+    if (status) {
+      status.classList.toggle("hidden", !busy);
+      status.classList.toggle("flex", busy);
+    }
+    if (statusText)
+      statusText.textContent = busy ? t(messageKey || "historyUpdating") : "";
+
+    if (overlay) overlay.classList.toggle("hidden", !busy);
+    if (overlayText)
+      overlayText.textContent = busy ? t(messageKey || "historyUpdating") : "";
+
+    if (refreshBtn) refreshBtn.disabled = !!busy;
+    if (clearBtn) clearBtn.disabled = !!busy;
+    if (loadMoreBtn) loadMoreBtn.disabled = !!busy;
+    if (refreshBtn) refreshBtn.classList.toggle("opacity-50", !!busy);
+    if (clearBtn) clearBtn.classList.toggle("opacity-50", !!busy);
+    if (loadMoreBtn) loadMoreBtn.classList.toggle("opacity-50", !!busy);
+  }
+  function setHistoryRowBusy(id, busy, messageKey) {
+    const row = document.querySelector(
+      '[data-history-id="' + CSS.escape(String(id)) + '"]'
+    );
+    if (!row) return;
+    row.classList.toggle("opacity-60", !!busy);
+    row.classList.toggle("pointer-events-none", !!busy);
+    const spinner = row.querySelector("[data-history-spinner]");
+    if (spinner) spinner.classList.toggle("hidden", !busy);
+    if (spinner && messageKey) spinner.setAttribute("title", t(messageKey));
+  }
+  function renderHistorySkeleton(count = 4) {
+    const list = document.getElementById("historyList");
+    if (!list) return;
+    list.innerHTML = Array.from({ length: count })
+      .map(function () {
+        return (
+          '<div class="glass-panel rounded-xl p-3 flex items-start justify-between gap-3">' +
+          '<div class="flex-1 min-w-0 grid gap-2">' +
+          '<div class="skeleton h-4 rounded w-3/4"></div>' +
+          '<div class="skeleton h-3 rounded w-1/2"></div>' +
+          '<div class="skeleton h-3 rounded w-1/3"></div>' +
+          "</div>" +
+          '<div class="flex items-center gap-1 flex-none">' +
+          '<div class="skeleton h-8 w-8 rounded"></div>' +
+          "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
+  function setHistoryLoadMoreVisible(visible) {
+    const btn = document.getElementById("historyLoadMoreBtn");
+    if (!btn) return;
+    btn.classList.toggle("hidden", !visible);
+  }
+
+  function setHistoryLoadMoreDisabled(disabled) {
+    const btn = document.getElementById("historyLoadMoreBtn");
+    if (!btn) return;
+    btn.disabled = !!disabled;
+    btn.classList.toggle("opacity-50", !!disabled);
+  }
+  function saveHistoryManual() {
+    applyEditsToMermaidCode({ rerender: false });
+    pendingHistorySave = false;
+    saveHistory({ reason: "manual" });
+  }
+
+  function saveHistory(meta = {}) {
+    const prompt = document.getElementById("userInput").value || "";
+    const code = document.getElementById("mermaidCode").value || "";
+    if (!code.trim()) {
+      showToast("info", "保存するMermaidコードがありません");
+      return;
+    }
+
+    const entry = {
+      prompt,
+      code,
+      diagramType: document.getElementById("diagramTypeSelect").value,
+      model: document.getElementById("modelSelect").value,
+      theme: getDiagramTheme(),
+      fileName:
+        currentFile && currentFile.filename ? currentFile.filename : null,
+      meta,
+    };
+
+    google.script.run
+      .withSuccessHandler(() => refreshHistory())
+      .withFailureHandler((e) =>
+        showToast("error", "履歴の保存に失敗しました: " + e.message)
+      )
+      .saveDiagramHistory(entry);
+  }
+
+  function refreshHistory() {
+    const end = beginHistoryOp("historyUpdating");
+    historyNextOffset = 0;
+    historyHasMore = false;
+    setHistoryLoadMoreVisible(false);
+    setHistoryLoadMoreDisabled(true);
+    renderHistorySkeleton();
+    google.script.run
+      .withSuccessHandler((res) => {
+        const items = res && res.items ? res.items : [];
+        renderHistoryList(items || []);
+        historyNextOffset =
+          (res && Number.isFinite(res.offset) ? res.offset : 0) + items.length;
+        historyHasMore = !!(res && res.hasMore);
+        setHistoryLoadMoreVisible(historyHasMore);
+        setHistoryLoadMoreDisabled(false);
+        end();
+      })
+      .withFailureHandler((e) => {
+        console.error("History load failed:", e);
+        end();
+      })
+      .listDiagramHistoryPage(HISTORY_PAGE_SIZE, 0);
+  }
+
+  function loadMoreHistory() {
+    if (!historyHasMore) return;
+    const end = beginHistoryOp("historyUpdating");
+    setHistoryLoadMoreDisabled(true);
+    google.script.run
+      .withSuccessHandler((res) => {
+        const items = res && res.items ? res.items : [];
+        appendHistoryList(items || []);
+        historyNextOffset =
+          (res && Number.isFinite(res.offset)
+            ? res.offset
+            : historyNextOffset) + items.length;
+        historyHasMore = !!(res && res.hasMore);
+        setHistoryLoadMoreVisible(historyHasMore);
+        setHistoryLoadMoreDisabled(false);
+        end();
+      })
+      .withFailureHandler((e) => {
+        end();
+        setHistoryLoadMoreDisabled(false);
+        showToast(
+          "error",
+          "履歴の読み込みに失敗しました: " +
+            (e && e.message ? e.message : String(e))
+        );
+      })
+      .listDiagramHistoryPage(HISTORY_PAGE_SIZE, historyNextOffset);
+  }
+
+  function renderHistoryList(items) {
+    const list = document.getElementById("historyList");
+    list.innerHTML = "";
+
+    if (!items.length) {
+      list.innerHTML =
+        '<div class="text-sm ui-muted border ui-border rounded-lg p-3">' +
+        escapeHtml(t("historyEmpty")) +
+        "</div>";
+      return;
+    }
+    appendHistoryList(items);
+  }
+
+  function appendHistoryList(items) {
+    const list = document.getElementById("historyList");
+    if (!list) return;
+
+    for (const item of items || []) {
+      const ts = item.createdAt ? new Date(item.createdAt) : null;
+      const timeText = ts ? ts.toLocaleString() : "";
+      const title =
+        (item.prompt || item.diagramType || "diagram")
+          .toString()
+          .trim()
+          .slice(0, 40) || "diagram";
+      const subtitle = [item.diagramType, item.model, item.theme]
+        .filter(Boolean)
+        .join(" / ");
+
+      const row = document.createElement("div");
+      row.className =
+        "glass-panel rounded-xl p-3 flex items-start justify-between gap-3";
+      row.dataset.historyId = String(item.id);
+      row.innerHTML =
+        '<button class="text-left flex-1 min-w-0 hover:opacity-90 transition" title="' +
+        escapeHtml(t("historyRestoreTitle")) +
+        '">' +
+        '<div class="text-sm font-semibold ui-text truncate">' +
+        escapeHtml(title) +
+        "</div>" +
+        '<div class="text-xs ui-muted truncate">' +
+        escapeHtml(subtitle) +
+        "</div>" +
+        '<div class="text-xs ui-muted truncate">' +
+        escapeHtml(timeText) +
+        "</div>" +
+        "</button>" +
+        '<div class="flex items-center gap-1 flex-none">' +
+        '<span class="mini-spinner hidden" data-history-spinner></span>' +
+        '<button class="ui-muted canvas-control transition p-2 rounded-lg" title="' +
+        escapeHtml(t("historyDeleteTitle")) +
+        '">' +
+        '<span class="material-symbols-outlined text-lg">delete</span>' +
+        "</button>" +
+        "</div>";
+
+      const [loadBtn, deleteBtn] = row.querySelectorAll("button");
+      loadBtn.addEventListener("click", () => loadHistory(item.id));
+      deleteBtn.addEventListener("click", () => deleteHistory(item.id));
+
+      list.appendChild(row);
+    }
+  }
+
+  function loadHistory(id) {
+    const end = beginHistoryOp("historyLoading", id);
+    google.script.run
+      .withSuccessHandler((item) => {
+        if (!item) {
+          end();
+          return;
+        }
+        document.getElementById("userInput").value = item.prompt || "";
+        document.getElementById("mermaidCode").value = item.code || "";
+        syncFlowOnlyControls(item.code || "");
+        if (item.diagramType)
+          document.getElementById("diagramTypeSelect").value = item.diagramType;
+        if (item.model)
+          document.getElementById("modelSelect").value = item.model;
+        if (item.theme)
+          localStorage.setItem(
+            DIAGRAM_THEME_KEY,
+            normalizeDiagramTheme(item.theme)
+          );
+        pendingHistorySave = false;
+        changeTheme();
+        end();
+      })
+      .withFailureHandler((e) => {
+        end();
+        showToast("error", "履歴の読み込みに失敗しました: " + e.message);
+      })
+      .getDiagramHistoryItem(id);
+  }
+
+  function deleteHistory(id) {
+    const end = beginHistoryOp("historyDeleting", id);
+    google.script.run
+      .withSuccessHandler(() => {
+        refreshHistory();
+        end();
+      })
+      .withFailureHandler((e) => {
+        end();
+        showToast("error", "履歴の削除に失敗しました: " + e.message);
+      })
+      .deleteDiagramHistory(id);
+  }
+
+  function clearHistory() {
+    confirmAsync(t("historyClearConfirm"), t("historyClearTitle")).then(
+      (ok) => {
+        if (!ok) return;
+        const end = beginHistoryOp("historyClearing");
+        renderHistorySkeleton();
+        google.script.run
+          .withSuccessHandler(() => {
+            refreshHistory();
+            end();
+          })
+          .withFailureHandler((e) => {
+            end();
+            showToast("error", "履歴の全削除に失敗しました: " + e.message);
+          })
+          .clearDiagramHistory();
+      }
+    );
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function applyEditsToMermaidCode(options) {
+    var opts = options || {};
+    var rerender = opts.rerender !== false;
+    var edits = interactiveEdits.nodeLabels || {};
+    var keys = Object.keys(edits);
+    if (!keys.length) return false;
+
+    var textarea = document.getElementById("mermaidCode");
+    if (!textarea) return false;
+    var code = textarea.value || "";
+    var updated = applyNodeLabelEditsToMermaid(code, edits);
+    textarea.value = updated;
+    interactiveEdits.nodeLabels = Object.create(null);
+    if (rerender) renderDiagram();
+    return true;
+  }
+
+  function applyNodeLabelEditsToMermaid(code, edits) {
+    if (!isFlowchartLike(code)) return code;
+    var out = code;
+    var keys = Object.keys(edits || {});
+    for (var i = 0; i < keys.length; i++) {
+      var id = keys[i];
+      out = replaceFlowchartNodeLabel(out, id, edits[id]);
+    }
+    return out;
+  }
+
+  function replaceFlowchartNodeLabel(code, nodeId, newLabel) {
+    var id = String(nodeId);
+    var normalized = String(newLabel).split("\r").join("");
+    var label = normalized.split("\n").join("\\n");
+    var patterns = [
+      { open: "((", close: "))" },
+      { open: "[[", close: "]]" },
+      { open: "[/", close: "/]" },
+      { open: "[", close: "]" },
+      { open: "(", close: ")" },
+      { open: "{", close: "}" },
+    ];
+
+    var openTokens = [];
+    for (var i = 0; i < patterns.length; i++) openTokens.push(patterns[i].open);
+    var found = findFlowchartNodeDeclaration(code, id, openTokens);
+    if (!found) {
+      var quoted = JSON.stringify(label);
+      var suffix = code && code.charAt(code.length - 1) === "\n" ? "" : "\n";
+      return code + suffix + id + "[" + quoted + "]";
+    }
+
+    var openMatch = null;
+    for (var j = 0; j < patterns.length; j++) {
+      if (code.indexOf(patterns[j].open, found.afterId) === found.afterId) {
+        openMatch = patterns[j];
+        break;
+      }
+    }
+    if (!openMatch) return code;
+
+    var labelStart = found.afterId + openMatch.open.length;
+    var labelEnd = code.indexOf(openMatch.close, labelStart);
+    if (labelEnd === -1) return code;
+
+    return code.slice(0, labelStart) + label + code.slice(labelEnd);
+  }
+
+  function findFlowchartNodeDeclaration(code, id, openTokens) {
+    var re = /(^|[^A-Za-z0-9_])/g;
+    var m;
+    while ((m = re.exec(code))) {
+      var start = re.lastIndex;
+      if (code.indexOf(id, start) !== start) continue;
+      var afterId0 = start + id.length;
+      var rest = code.slice(afterId0);
+      var m2 = /^\s*/.exec(rest);
+      var ws = m2 ? m2[0].length : 0;
+      var afterId = afterId0 + ws;
+      var ok = false;
+      for (var i = 0; i < openTokens.length; i++) {
+        if (code.indexOf(openTokens[i], afterId) === afterId) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) continue;
+      return { afterId: afterId };
+    }
+    return null;
+  }
+</script>

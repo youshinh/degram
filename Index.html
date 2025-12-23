@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <base target="_top" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2212%22%20fill%3D%22%230b0d14%22/%3E%3Ccircle%20cx%3D%2218%22%20cy%3D%2220%22%20r%3D%226%22%20fill%3D%22%2360a5fa%22/%3E%3Ccircle%20cx%3D%2246%22%20cy%3D%2220%22%20r%3D%226%22%20fill%3D%22%23a78bfa%22/%3E%3Ccircle%20cx%3D%2232%22%20cy%3D%2244%22%20r%3D%226%22%20fill%3D%22%2334d399%22/%3E%3Cpath%20d%3D%22M24%2020h16M21%2025l7%2014M43%2025l-7%2014%22%20stroke%3D%22%23e2e8f0%22%20stroke-width%3D%224%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.0/mermaid.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/canvg/3.0.10/umd.min.js"></script>
+  <!-- Client code is split into Styles.html / ClientApp.html for maintainability. -->
+  <?!= include('TailwindConfig'); ?>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <?!= include('BootDiagnostics'); ?>
+
+  <?!= include('Styles'); ?>
+
+</head>
+
+<body class="ui-dark h-screen w-full fixed flex flex-col overflow-hidden">
+  <header class="h-12 md:h-14 px-4 md:px-6 flex items-center border-b ui-border flex-shrink-0 z-50 relative"
+    style="background: var(--ui-surface-2); backdrop-filter: blur(12px);">
+    <div class="flex items-center gap-2 flex-1">
+      <button id="panelToggleBtn" type="button"
+        class="md:hidden canvas-control w-10 h-10 rounded-lg flex items-center justify-center" onclick="togglePanel()"
+        aria-label="Menu" aria-expanded="false" title="メニュー">
+        <span id="panelToggleIcon"
+          class="material-symbols-outlined text-2xl transition-transform duration-200">menu</span>
+      </button>
+    </div>
+    <h1 id="appTitle"
+      class="absolute left-1/2 -translate-x-1/2 text-lg md:text-xl font-extrabold tracking-tight select-none">De:gram
+    </h1>
+    <div class="flex items-center justify-end flex-1">
+      <button id="settingsBtn" class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center"
+        onclick="openSettings()" title="設定" aria-label="Settings">
+        <span class="material-symbols-outlined text-2xl">settings</span>
+      </button>
+    </div>
+  </header>
+
+
+  <?!= include('Overlays'); ?>
+
+
+  <?!= include('Layout'); ?>
+
+  <?!= include('ClientApp'); ?>
+</body>
+
+</html>

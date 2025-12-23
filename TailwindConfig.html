@@ -1,0 +1,34 @@
+<script>
+  window.tailwind = window.tailwind || {};
+  window.tailwind.config = {
+    safelist: [
+      "w-0",
+      "h-0",
+      "md:w-0",
+      "md:w-[340px]",
+      "h-[45%]",
+      "md:h-full",
+      "bg-white/70",
+      "border-slate-200",
+      "text-slate-900",
+    ],
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ["Inter", "Noto Sans JP", "sans-serif"],
+        },
+        colors: {
+          google: {
+            blue: "#1a73e8",
+            blueHover: "#1557b0",
+          },
+          gray: {
+            850: "#1f2937",
+            900: "#0f111a",
+            950: "#0b0d14",
+          },
+        },
+      },
+    },
+  };
+</script>

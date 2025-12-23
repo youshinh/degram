@@ -1,0 +1,51 @@
+<script>
+  // Boot diagnostics (helps detect cache/deploy issues and early script parse errors)
+  window.__DEGRAM_BUILD = "2025-12-13.1";
+  window.__DEGRAM_BOOT = { ok: false, firstError: null };
+  function __degramEscapeHtml(str) {
+    return String(str == null ? "" : str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+  window.addEventListener("error", function (e) {
+    try {
+      if (!window.__DEGRAM_BOOT.firstError) {
+        window.__DEGRAM_BOOT.firstError = {
+          message: String(e && e.message || "Unknown error"),
+          src: String(e && e.filename || ""),
+          line: Number(e && e.lineno || 0),
+          col: Number(e && e.colno || 0),
+        };
+      }
+    } catch (err) { }
+  });
+  window.setSideTab = window.setSideTab || function () {
+    console.warn("setSideTab is not ready. Build:", window.__DEGRAM_BUILD);
+  };
+  document.addEventListener("DOMContentLoaded", function () {
+    window.setTimeout(function () {
+      const boot = window.__DEGRAM_BOOT;
+      if (boot && boot.ok) return;
+      const existing = document.getElementById("degramBootBanner");
+      if (existing) return;
+      const el = document.createElement("div");
+      el.id = "degramBootBanner";
+      el.style.cssText =
+        "position:fixed;top:12px;right:12px;z-index:99999;max-width:calc(100vw - 24px);" +
+        "background:rgba(15,23,42,0.92);color:#e2e8f0;border:1px solid rgba(255,255,255,0.12);" +
+        "padding:10px 12px;border-radius:12px;backdrop-filter:blur(10px);font:12px/1.4 system-ui, -apple-system, Segoe UI, Roboto;";
+      const err = boot && boot.firstError;
+      el.innerHTML =
+        "<div style='font-weight:700;margin-bottom:4px'>De:gram failed to start</div>" +
+        "<div style='opacity:.85'>Build: " + String(window.__DEGRAM_BUILD || "") + "</div>" +
+        (err ? ("<div style='margin-top:6px;opacity:.9;word-break:break-word'>" +
+          "Error: " + __degramEscapeHtml(err.message) +
+          (err.src ? ("<br>at " + __degramEscapeHtml(err.src) + ":" + err.line + ":" + err.col) : "") +
+          "</div>") : "<div style='margin-top:6px;opacity:.9'>Hard reload (Ctrl+F5) / redeploy.</div>");
+      document.body.appendChild(el);
+    }, 900);
+  });
+</script>

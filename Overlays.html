@@ -1,0 +1,280 @@
+  <div id="toastHost"
+    class="fixed top-3 left-1/2 -translate-x-1/2 md:left-auto md:translate-x-0 md:right-3 z-[70] grid gap-2 w-[min(420px,calc(100vw-24px))] pointer-events-none">
+  </div>
+
+	  <div id="confirmModal" class="fixed inset-0 z-[70] hidden items-center justify-center p-4">
+	    <div class="modal-overlay absolute inset-0" onclick="resolveConfirm(false)"></div>
+	    <div class="relative ui-surface w-full max-w-sm rounded-xl shadow-2xl p-4 md:p-5">
+	      <div class="flex items-start gap-3">
+        <span class="material-symbols-outlined text-blue-400 text-lg mt-0.5">help</span>
+        <div class="min-w-0 flex-1">
+          <div class="text-sm font-extrabold tracking-wide" id="confirmTitle">Confirm</div>
+          <div class="text-sm ui-muted mt-1 break-words leading-relaxed" id="confirmMessage">Are you sure?</div>
+        </div>
+      </div>
+      <div class="mt-4 flex justify-end gap-2">
+	        <button id="confirmCancelBtn" type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+	          onclick="resolveConfirm(false)">Cancel</button>
+		        <button id="confirmOkBtn" type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+		          onclick="resolveConfirm(true)">OK</button>
+	      </div>
+	    </div>
+	  </div>
+
+	  <div id="textEditModal" class="fixed inset-0 z-[70] hidden items-center justify-center p-4">
+	    <div class="modal-overlay absolute inset-0" onclick="resolveTextEdit(null)"></div>
+	    <div class="relative ui-surface w-full max-w-md rounded-xl shadow-2xl p-4 md:p-5">
+	      <div class="flex items-center justify-between gap-3">
+	        <div class="text-sm md:text-base font-extrabold tracking-wide" id="textEditTitle">Edit</div>
+	        <button id="textEditCloseBtn" type="button" class="canvas-glass canvas-control circle-btn w-10 h-10 transition shadow"
+	          onclick="resolveTextEdit(null)" title="閉じる">
+	          <span class="material-symbols-outlined text-lg">close</span>
+	        </button>
+	      </div>
+	      <div class="mt-4 grid gap-2">
+	        <textarea id="textEditInput" rows="4"
+	          class="w-full ui-input border rounded-lg p-3 text-sm outline-none resize-none" placeholder=""></textarea>
+	        <div class="text-xs ui-muted leading-relaxed" id="textEditHint"></div>
+	      </div>
+	      <div class="mt-4 flex justify-end gap-2">
+		        <button id="textEditCancelBtn" type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+		          onclick="resolveTextEdit(null)">Cancel</button>
+		        <button id="textEditOkBtn" type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+		          onclick="resolveTextEdit('__SUBMIT__')">OK</button>
+	      </div>
+	    </div>
+	  </div>
+
+	  <div id="imagePromptModal" class="fixed inset-0 z-[70] hidden items-center justify-center p-4">
+	    <div class="modal-overlay absolute inset-0" onclick="resolveImagePrompt(null)"></div>
+	    <div class="relative ui-surface w-full max-w-md rounded-xl shadow-2xl p-4 md:p-5 max-h-[85vh] overflow-hidden flex flex-col">
+	      <div class="flex items-center justify-between gap-3">
+	        <div class="text-sm md:text-base font-extrabold tracking-wide" id="imagePromptTitle">IMAGE PROMPT</div>
+	        <button type="button" class="canvas-glass canvas-control circle-btn w-10 h-10 transition shadow" onclick="resolveImagePrompt(null)" title="閉じる">
+	          <span class="material-symbols-outlined text-lg">close</span>
+	        </button>
+	      </div>
+
+	      <div class="mt-4 grid gap-3 overflow-y-auto custom-scrollbar pr-1">
+	        <label class="grid gap-1">
+	          <span class="text-xs font-bold tracking-wider ui-muted" id="imagePromptLangLabel">LANGUAGE</span>
+	          <select id="imageLangSelect" class="ui-input border rounded-lg px-3 py-2 text-sm outline-none">
+	            <option value="auto">Auto</option>
+	            <option value="ja">日本語</option>
+	            <option value="en">English</option>
+	          </select>
+	        </label>
+
+	        <label class="grid gap-1">
+	          <span class="text-xs font-bold tracking-wider ui-muted" id="imagePromptStyleLabel">STYLE</span>
+	          <select id="imageStyleSelect" class="ui-input border rounded-lg px-3 py-2 text-sm outline-none"></select>
+	        </label>
+
+	        <label class="grid gap-1">
+	          <span class="text-xs font-bold tracking-wider ui-muted" id="imagePromptCustomLabel">CUSTOM STYLE (OPTIONAL)</span>
+	          <textarea id="imageStyleCustomInput" rows="3"
+	            class="w-full ui-input border rounded-lg p-3 text-sm outline-none resize-none"
+	            placeholder=""></textarea>
+	        </label>
+
+	        <label class="grid gap-1">
+	          <span class="text-xs font-bold tracking-wider ui-muted" id="imagePromptNegativesLabel">EXTRA NEGATIVES (OPTIONAL)</span>
+	          <textarea id="imageNegativesInput" rows="3"
+	            class="w-full ui-input border rounded-lg p-3 text-sm outline-none resize-none"
+	            placeholder=""></textarea>
+	        </label>
+
+	        <div class="text-xs ui-muted leading-relaxed" id="imagePromptHint">
+	          TEXT RULE: 画像内の文字は日本語タイトルのみ（他の文字は禁止）
+	        </div>
+	      </div>
+
+	      <div class="mt-4 flex justify-end gap-2">
+	        <button id="imagePromptCancelBtn" type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+	          onclick="resolveImagePrompt(null)">Cancel</button>
+	        <button id="imagePromptOkBtn" type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+	          onclick="resolveImagePrompt('__SUBMIT__')">OK</button>
+	      </div>
+	    </div>
+	  </div>
+
+	  <div id="settingsModal" class="fixed inset-0 z-[60] hidden items-center justify-center p-4">
+	    <div class="modal-overlay absolute inset-0" onclick="closeSettings()"></div>
+	    <div
+      class="relative ui-surface w-full max-w-md rounded-xl shadow-2xl p-4 md:p-5 max-h-[85vh] overflow-hidden flex flex-col">
+      <div class="flex items-center justify-between gap-3">
+        <h2 id="settingsTitle" class="text-sm md:text-base font-extrabold tracking-wide">SETTINGS</h2>
+        <button class="canvas-glass canvas-control circle-btn w-10 h-10 transition shadow" onclick="closeSettings()"
+          title="閉じる">
+          <span class="material-symbols-outlined text-lg">close</span>
+        </button>
+      </div>
+
+      <div class="mt-4 flex-1 min-h-0 overflow-hidden flex flex-col">
+        <div class="canvas-glass rounded-lg p-1 shadow flex items-center gap-1">
+          <button type="button" class="canvas-control flex-1 py-2 rounded-lg text-xs font-extrabold tracking-wider"
+            data-settings-tab="ui" onclick="setSettingsTab('ui')"><span id="settingsTabUi">UI</span></button>
+          <button type="button" class="canvas-control flex-1 py-2 rounded-lg text-xs font-extrabold tracking-wider"
+            data-settings-tab="guide" onclick="setSettingsTab('guide')"><span
+              id="settingsTabGuide">GUIDE</span></button>
+        </div>
+
+        <div class="mt-4 flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1 grid gap-4">
+          <div data-settings-panel="ui" class="grid gap-4">
+            <div class="grid gap-2">
+              <div class="text-xs font-bold tracking-wider ui-muted" id="uiThemeLabel">UI THEME</div>
+              <div class="flex gap-2">
+                <button id="uiThemeDarkBtn" type="button"
+                  class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold" data-ui-theme="dark"
+                  onclick="setUiThemeAndSync('dark')">DARK</button>
+                <button id="uiThemeLightBtn" type="button"
+                  class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold" data-ui-theme="light"
+                  onclick="setUiThemeAndSync('light')">LIGHT</button>
+              </div>
+            </div>
+
+            <div class="grid gap-2">
+              <div class="text-xs font-bold tracking-wider ui-muted" id="langLabel">LANGUAGE</div>
+              <div class="flex gap-2">
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+                  data-lang="ja" onclick="setLanguageAndSync('ja')">日本語</button>
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+                  data-lang="en" onclick="setLanguageAndSync('en')">EN</button>
+              </div>
+            </div>
+
+            <div class="grid gap-2">
+              <div class="text-xs font-bold tracking-wider ui-muted" id="fontSizeLabel">TEXT SIZE</div>
+              <div class="flex gap-2">
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+                  data-font-size="sm" onclick="setFontSizeAndSync('sm')"><span id="fontSizeSmall">Small</span></button>
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+                  data-font-size="md" onclick="setFontSizeAndSync('md')"><span
+                    id="fontSizeNormal">Normal</span></button>
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+                  data-font-size="lg" onclick="setFontSizeAndSync('lg')"><span id="fontSizeLarge">Large</span></button>
+              </div>
+            </div>
+          </div>
+
+          <div data-settings-panel="guide" class="grid gap-4 hidden pb-8">
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-blue-400">explore</span>
+              <div class="text-xs font-bold tracking-wider ui-muted" id="guideLabel">GUIDE</div>
+            </div>
+            
+            <div class="grid gap-3">
+              <!-- Basic Flow Section -->
+              <div class="ui-surface rounded-xl border p-4 grid gap-3 shadow-sm hover:shadow-md transition-shadow">
+                <div class="flex items-center gap-2">
+                  <span class="material-symbols-outlined text-blue-400 text-lg">auto_awesome</span>
+                  <div class="text-xs font-extrabold" id="guideStepTitle">基本の流れ</div>
+                </div>
+                <ul class="text-sm ui-muted grid gap-2.5 list-none leading-relaxed pl-1">
+                  <li class="flex gap-2 font-medium"><span class="text-blue-400 font-bold">1</span> <span id="guideStep1">テンプレを選ぶ、またはプロンプトを入力</span></li>
+                  <li class="flex gap-2 font-medium"><span class="text-blue-400 font-bold">2</span> <span id="guideStep2">「生成する」または Ctrl + Enter</span></li>
+                  <li class="flex gap-2 font-medium"><span class="text-blue-400 font-bold">3</span> <span id="guideStep3">編集は Editor タブ → プレビュー更新</span></li>
+                  <li class="flex gap-2 font-medium"><span class="text-blue-400 font-bold">4</span> <span id="guideStep4">フローチャート時のみ「描画設定 / レイアウト」等が表示</span></li>
+                </ul>
+              </div>
+
+              <!-- Shortcut Section -->
+              <div class="ui-surface rounded-xl border p-4 grid gap-3 shadow-sm">
+                <div class="flex items-center gap-2">
+                  <span class="material-symbols-outlined text-purple-400 text-lg">keyboard</span>
+                  <div class="text-xs font-extrabold" id="guideShortcutTitle">ショートカット</div>
+                </div>
+                <div class="grid gap-2 text-sm ui-muted">
+                  <div class="flex items-center justify-between gap-4">
+                    <span id="guideShortcut1">生成する</span>
+                    <kbd class="canvas-glass px-2 py-0.5 rounded-md text-[11px] font-mono border ui-border shadow-sm">Ctrl + Enter</kbd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4">
+                    <span id="guideShortcut2">メニューを閉じる</span>
+                    <kbd class="canvas-glass px-2 py-0.5 rounded-md text-[11px] font-mono border ui-border shadow-sm">Esc</kbd>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Export Section -->
+              <div class="ui-surface rounded-xl border p-4 grid gap-3 shadow-sm">
+                <div class="flex items-center gap-2">
+                  <span class="material-symbols-outlined text-emerald-400 text-lg">download</span>
+                  <div class="text-xs font-extrabold" id="guideExportTitle">ダウンロード</div>
+                </div>
+                <div class="text-sm ui-muted leading-relaxed" id="guideExportText">右上のダウンロードから PNG / SVG / MD を選択可能。</div>
+              </div>
+
+              <!-- Tips Section (New) -->
+              <div class="ui-surface rounded-xl border p-4 grid gap-3 shadow-sm">
+                <div class="flex items-center gap-2">
+                  <span class="material-symbols-outlined text-amber-400 text-lg">lightbulb_circle</span>
+                  <div class="text-xs font-extrabold" id="guideTipsTitle">便利な使い方</div>
+                </div>
+                <div class="text-sm ui-muted leading-relaxed space-y-2">
+                  <p id="guideTips1" class="font-medium">• フロー内のノードを直接クリックしてラベルを編集できます。</p>
+                  <p id="guideTips2" class="font-medium">• ドラッグで移動、スクロールで拡大縮小が可能です。</p>
+                  <p id="guideTips3" class="font-medium hidden"></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="paletteModal" class="fixed inset-0 z-[60] hidden items-center justify-center p-4">
+    <div class="modal-overlay absolute inset-0" onclick="closePalette()"></div>
+    <div class="relative ui-surface w-full max-w-md rounded-xl shadow-2xl p-4 md:p-5">
+      <div class="flex items-center justify-between gap-3">
+        <div class="grid gap-1">
+          <h2 id="paletteModalTitle" class="text-sm md:text-base font-extrabold tracking-wide">DRAW</h2>
+          <p id="paletteModalHint" class="text-sm ui-muted leading-relaxed">Flowchartのノード/エッジ色を変更します。</p>
+        </div>
+        <button class="canvas-glass canvas-control circle-btn w-10 h-10 transition shadow" onclick="closePalette()"
+          title="閉じる">
+          <span class="material-symbols-outlined text-lg">close</span>
+        </button>
+      </div>
+      
+      <div class="mt-4 grid gap-3">
+        <div class="text-xs font-bold tracking-wider ui-muted" id="paletteLabel">NODE / EDGE COLOR</div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="grid gap-1">
+            <span class="text-xs ui-muted" id="nodeColorLabel">Node</span>
+            <input id="nodeColorInput" type="color" class="h-10 w-full rounded-lg border ui-input cursor-pointer"
+              onchange="onPaletteChange()" />
+          </label>
+          <label class="grid gap-1">
+            <span class="text-xs ui-muted" id="edgeColorLabel">Edge</span>
+            <input id="edgeColorInput" type="color" class="h-10 w-full rounded-lg border ui-input cursor-pointer"
+              onchange="onPaletteChange()" />
+          </label>
+        </div>
+        <div class="flex flex-wrap gap-2 pt-1" id="palettePresets"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="typeHelpModal" class="fixed inset-0 z-[60] hidden items-center justify-center p-4">
+    <div class="modal-overlay absolute inset-0" onclick="closeTypeHelp()"></div>
+    <div
+      class="relative ui-surface w-full max-w-3xl rounded-xl shadow-2xl p-4 md:p-5 max-h-[85vh] overflow-hidden flex flex-col">
+      <div class="flex items-center justify-between gap-3">
+        <div class="grid gap-1">
+          <h2 id="typeHelpTitle" class="text-sm md:text-base font-extrabold tracking-wide">TYPE GUIDE</h2>
+          <p id="typeHelpIntro" class="text-sm ui-muted leading-relaxed">各タイプのサンプルを確認できます。</p>
+        </div>
+        <button class="canvas-glass canvas-control circle-btn w-10 h-10 transition shadow" onclick="closeTypeHelp()"
+          title="閉じる">
+          <span class="material-symbols-outlined text-lg">close</span>
+        </button>
+      </div>
+
+      <div class="mt-4 overflow-y-auto custom-scrollbar pr-1">
+        <div id="typeHelpGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+      </div>
+    </div>
+  </div>

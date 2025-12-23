@@ -1,0 +1,359 @@
+  <div class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+
+    <div id="canvas-container"
+      class="order-1 md:order-2 flex-1 relative overflow-hidden flex flex-col transition-colors duration-300">
+      <button id="openPanelBtn" onclick="togglePanel(true)"
+        class="absolute bottom-24 left-4 md:bottom-auto md:top-4 md:left-4 z-40 canvas-glass canvas-control rounded-full w-12 h-12 shadow-xl transition transform hover:scale-105 hidden items-center justify-center"
+        title="パネルを開く">
+        <span class="material-symbols-outlined text-2xl md:hidden">keyboard_arrow_up</span>
+        <span class="material-symbols-outlined text-xl hidden md:inline">chevron_right</span>
+      </button>
+
+      <div class="absolute top-3 right-4 md:right-6 z-30">
+        <div id="downloadMenuHost" class="relative">
+          <button onclick="toggleDownloadMenu(event)"
+            class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center" title="Download"
+            aria-label="Download">
+            <span class="material-symbols-outlined text-2xl">download</span>
+          </button>
+          <div id="downloadMenu"
+            class="hidden absolute right-0 mt-2 w-44 ui-surface rounded-xl shadow-2xl overflow-hidden">
+            <button type="button" onclick="downloadPNG(); closeDownloadMenu()"
+              class="w-full text-left px-3 py-2.5 text-sm font-bold hover:opacity-90 transition flex items-center gap-2">
+              <span class="material-symbols-outlined text-lg">image</span> PNG
+            </button>
+            <button type="button" onclick="downloadSVG(); closeDownloadMenu()"
+              class="w-full text-left px-3 py-2.5 text-sm font-bold hover:opacity-90 transition flex items-center gap-2 border-t"
+              style="border-color: var(--ui-border);">
+              <span class="material-symbols-outlined text-lg">polyline</span> SVG
+            </button>
+            <button type="button" onclick="downloadMD(); closeDownloadMenu()"
+              class="w-full text-left px-3 py-2.5 text-sm font-bold hover:opacity-90 transition flex items-center gap-2 border-t"
+              style="border-color: var(--ui-border);">
+              <span class="material-symbols-outlined text-lg">markdown</span> MD
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="floatingDock" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 w-auto max-w-[calc(100vw-24px)]">
+        <div
+          class="ui-surface backdrop-blur-xl rounded-xl shadow-2xl px-2 py-2 flex flex-wrap items-center justify-center gap-2"
+          style="background: var(--ui-surface-2);">
+          <div class="theme-chips flex items-center gap-1">
+            <button type="button"
+              class="canvas-control w-10 h-10 rounded-full flex items-center justify-center border ui-border"
+              data-diagram-theme="dark" aria-pressed="false" onclick="setDiagramThemeAndSync('dark')" title="Dark"
+              aria-label="Dark">
+              <span class="material-symbols-outlined text-2xl">dark_mode</span>
+            </button>
+            <button type="button"
+              class="canvas-control w-10 h-10 rounded-full flex items-center justify-center border ui-border"
+              data-diagram-theme="default" aria-pressed="false" onclick="setDiagramThemeAndSync('default')"
+              title="Light" aria-label="Light">
+              <span class="material-symbols-outlined text-2xl">light_mode</span>
+            </button>
+            <button type="button" data-flow-only="true"
+              class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center hidden"
+              onclick="openPalette()" title="Draw Settings" aria-label="Draw Settings">
+              <span class="material-symbols-outlined text-xl">palette</span>
+            </button>
+            <button id="layoutToggleBtn" type="button" data-flow-only="true"
+              class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center hidden"
+              onclick="toggleLayoutAndRender()" title="レイアウト切替" aria-label="レイアウト切替">
+              <span id="layoutToggleIcon" class="material-symbols-outlined text-xl">swap_horiz</span>
+            </button>
+            <button id="edgeModeBtn" type="button" data-flow-only="true"
+              class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center hidden" onclick="toggleEdgeMode()"
+              title="エッジ追加" aria-label="エッジ追加" aria-pressed="false">
+              <span class="material-symbols-outlined text-xl">add_link</span>
+            </button>
+          </div>
+
+          <div class="hidden md:block w-px h-8 mx-1" style="background: var(--ui-border);"></div>
+
+          <div class="hidden md:flex items-center gap-1">
+            <button onclick="zoomIn()" class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center"
+              title="拡大"><span class="material-symbols-outlined text-2xl">zoom_in</span></button>
+            <button onclick="resetZoom()" class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center"
+              title="フィット"><span class="material-symbols-outlined text-2xl">fit_screen</span></button>
+            <button onclick="zoomOut()" class="canvas-control w-10 h-10 rounded-lg flex items-center justify-center"
+              title="縮小"><span class="material-symbols-outlined text-2xl">zoom_out</span></button>
+          </div>
+        </div>
+      </div>
+
+      <div id="diagram-wrapper">
+        <div id="emptyStateCard" class="absolute inset-0 flex items-center justify-center px-4">
+          <div
+            class="ui-surface rounded-xl shadow-2xl border border-white/10 p-4 md:p-6 w-full max-w-xl backdrop-blur-xl">
+            <div class="flex items-start gap-3">
+              <span class="material-symbols-outlined text-2xl ui-muted mt-0.5">auto_awesome</span>
+              <div class="min-w-0">
+                <div class="text-sm md:text-base font-extrabold tracking-wide">テンプレートから開始</div>
+                <div class="text-sm ui-muted mt-1 leading-relaxed">① テンプレ選択（または入力） → ② 生成する</div>
+              </div>
+            </div>
+
+            <div class="mt-5 grid grid-cols-2 gap-3">
+              <button type="button" onclick="applyTemplate('flowchart')"
+                class="ui-surface border border-white/10 rounded-xl p-4 text-left transition shadow hover:opacity-95">
+                <div class="flex items-start gap-3">
+                  <span class="material-symbols-outlined text-2xl">polyline</span>
+                  <div class="min-w-0">
+                    <div class="text-sm font-extrabold">Flowchart</div>
+                    <div class="text-sm ui-muted leading-relaxed mt-0.5">分岐/処理フロー</div>
+                  </div>
+                </div>
+              </button>
+              <button type="button" onclick="applyTemplate('sequence')"
+                class="ui-surface border border-white/10 rounded-xl p-4 text-left transition shadow hover:opacity-95">
+                <div class="flex items-start gap-3">
+                  <span class="material-symbols-outlined text-2xl">sync_alt</span>
+                  <div class="min-w-0">
+                    <div class="text-sm font-extrabold">Sequence</div>
+                    <div class="text-sm ui-muted leading-relaxed mt-0.5">登場人物のやり取り</div>
+                  </div>
+                </div>
+              </button>
+              <button type="button" onclick="applyTemplate('mindmap')"
+                class="ui-surface border border-white/10 rounded-xl p-4 text-left transition shadow hover:opacity-95">
+                <div class="flex items-start gap-3">
+                  <span class="material-symbols-outlined text-2xl">account_tree</span>
+                  <div class="min-w-0">
+                    <div class="text-sm font-extrabold">Mindmap</div>
+                    <div class="text-sm ui-muted leading-relaxed mt-0.5">アイデアの整理</div>
+                  </div>
+                </div>
+              </button>
+              <button type="button" onclick="applyTemplate('gantt')"
+                class="ui-surface border border-white/10 rounded-xl p-4 text-left transition shadow hover:opacity-95">
+                <div class="flex items-start gap-3">
+                  <span class="material-symbols-outlined text-2xl">event</span>
+                  <div class="min-w-0">
+                    <div class="text-sm font-extrabold">Gantt</div>
+                    <div class="text-sm ui-muted leading-relaxed mt-0.5">計画/スケジュール</div>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div id="diagram-output" class="opacity-0"></div>
+      </div>
+
+      <div id="loadingOverlay"
+        class="absolute inset-0 bg-slate-950/55 backdrop-blur-sm flex flex-col items-center justify-center z-50 hidden pointer-events-none">
+        <div class="loading-spinner rounded-full border-4 border-t-4 border-white/15 h-8 w-8 md:h-10 md:w-10 mb-4">
+        </div>
+        <p id="loadingText"
+          class="text-white text-xs font-bold tracking-widest animate-pulse shadow-black drop-shadow-md">GENERATING...
+        </p>
+      </div>
+    </div>
+
+    <div id="sidePanel"
+      class="order-2 md:order-1 fixed inset-0 pt-12 md:pt-0 md:relative md:inset-auto border-t md:border-t-0 md:border-r ui-border z-40 shadow-2xl md:shadow-none panel-transition flex-shrink-0 flex flex-col overflow-hidden w-full h-full md:w-[340px] md:h-full">
+      <div id="panelResizer" class="hidden md:block absolute top-0 right-0 h-full w-2 cursor-col-resize z-50">
+        <div class="h-full w-px mx-auto bg-white/10 hover:bg-white/20 transition-colors"></div>
+      </div>
+      
+      <div class="px-3 md:px-4 py-2 border-b ui-border flex-shrink-0 flex items-center gap-2">
+        <div class="canvas-glass rounded-lg p-1 shadow flex-1">
+          <div class="grid grid-cols-3 gap-1">
+            <button type="button" class="canvas-control py-1.5 rounded-lg text-xs font-extrabold tracking-wider"
+              data-side-tab="create" onclick="setSideTab('create')">Create</button>
+            <button type="button" class="canvas-control py-1.5 rounded-lg text-xs font-extrabold tracking-wider"
+              data-side-tab="editor" onclick="setSideTab('editor')">Editor</button>
+            <button type="button" class="canvas-control py-1.5 rounded-lg text-xs font-extrabold tracking-wider"
+              data-side-tab="history" onclick="setSideTab('history')">History</button>
+          </div>
+        </div>
+
+        <button type="button" onclick="togglePanel(false)"
+          class="canvas-glass canvas-control w-10 h-10 rounded-lg flex items-center justify-center flex-none shadow"
+          title="パネルを閉じる" aria-label="Close panel">
+          <span class="material-symbols-outlined text-xl md:hidden">close</span>
+          <span class="material-symbols-outlined text-xl hidden md:inline">chevron_left</span>
+        </button>
+      </div>
+
+      <div class="flex-1 min-h-0 overflow-hidden">
+        <div data-side-panel="create" class="h-full overflow-hidden flex flex-col">
+          <div class="flex-1 min-h-0 overflow-y-auto p-3 md:p-4 custom-scrollbar grid gap-4 md:gap-5">
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center justify-between gap-2">
+                <label id="promptLabel" class="text-xs font-bold ui-muted uppercase tracking-wider">Prompt</label>
+                <div class="flex items-center gap-1">
+                  <button onclick="clearPrompt()" class="ui-muted canvas-control transition p-2 rounded-lg"
+                    title="プロンプトをクリア">
+                    <span class="material-symbols-outlined text-lg">clear</span>
+                  </button>
+                  <button onclick="newDiagram()" class="ui-muted canvas-control transition p-2 rounded-lg"
+                    title="新規作成（入力/コード/図をクリア）">
+                    <span class="material-symbols-outlined text-lg">note_add</span>
+                  </button>
+                </div>
+              </div>
+
+              <textarea id="userInput"
+                class="w-full h-[28vh] md:h-[38vh] min-h-[200px] md:min-h-[280px] max-h-[520px] ui-input border rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none transition placeholder-slate-500"
+                placeholder="システム要件、フロー、または画像を添付..."></textarea>
+
+              <div class="flex items-center gap-2">
+                <input type="file" id="fileInput" class="hidden" onchange="handleFileSelect(this)"
+                  accept="image/png,image/jpeg,image/webp,image/heic,image/heif,application/pdf,text/plain,text/csv,text/html,text/xml,text/rtf,text/markdown,text/css,text/javascript,application/x-javascript,application/x-python,text/x-python,audio/wav,audio/mp3,audio/aiff,audio/aac,audio/ogg,audio/flac,video/mp4,video/mpeg,video/mov,video/avi,video/x-flv,video/mpg,video/webm,video/wmv,video/3gpp" />
+                <button id="fileAttachBtn" type="button" onclick="document.getElementById('fileInput').click()"
+                  class="canvas-glass canvas-control px-2.5 py-2 rounded-lg transition shadow flex items-center gap-2"
+                  title="ファイルを添付">
+                  <span class="material-symbols-outlined text-lg">attach_file</span>
+                  <span class="text-xs font-bold tracking-wider">Attach</span>
+                </button>
+
+                <div id="fileChip"
+                  class="hidden flex-1 flex items-center gap-2 ui-surface text-xs px-2 py-2 rounded-lg border truncate">
+                  <span class="material-symbols-outlined text-sm ui-muted">description</span>
+                  <span id="fileNameDisplay" class="truncate">filename.png</span>
+                  <button type="button" onclick="clearFile()"
+                    class="hover:text-red-400 flex items-center flex-none"><span
+                      class="material-symbols-outlined text-sm">close</span></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="canvas-glass rounded-lg p-3">
+              <div class="select-none flex items-center justify-between gap-2 px-1 py-1">
+                <span id="advancedLabel" class="text-xs font-extrabold tracking-wider ui-muted">Advanced</span>
+                <span id="advancedSummaryText" class="text-xs ui-muted truncate">Auto • Lite</span>
+              </div>
+              <div class="mt-2 grid gap-2">
+                <div class="flex gap-2">
+                  <div class="flex-1 flex flex-col gap-1 min-w-[140px]">
+                    <div class="flex items-center justify-between gap-2">
+                      <label id="typeLabel" class="text-xs font-bold ui-muted uppercase tracking-wider">Type</label>
+                      <button id="typeHelpOpenBtn" type="button" onclick="openTypeHelp()"
+                        class="ui-muted canvas-control transition p-2 rounded-lg" title="Type Guide">
+                        <span class="material-symbols-outlined text-lg">help</span>
+                      </button>
+                    </div>
+                    <div class="relative">
+                      <select id="diagramTypeSelect"
+                        class="w-full h-11 appearance-none ui-input border rounded-lg text-sm px-2.5 outline-none focus:border-blue-500 cursor-pointer text-ellipsis overflow-hidden">
+                        <option value="auto">Auto (おまかせ)</option>
+                        <option value="flowchart TD">Flowchart</option>
+                        <option value="sequenceDiagram">Sequence</option>
+                        <option value="gantt">Gantt</option>
+                        <option value="classDiagram">Class</option>
+                        <option value="stateDiagram-v2">State</option>
+                        <option value="erDiagram">ER</option>
+                        <option value="journey">Journey</option>
+                        <option value="pie">Pie</option>
+                        <option value="gitGraph">Git</option>
+                        <option value="C4Context">C4</option>
+                        <option value="mindmap">Mindmap</option>
+                      </select>
+                    </div>
+                  </div>
+                  </div>
+                </div>
+            </div>
+          </div>
+
+          <div class="p-3 md:p-4 border-t ui-border"
+            style="background: var(--ui-surface-2); backdrop-filter: blur(12px);">
+            <button id="generateBtn" onclick="startGeneration()"
+              class="w-full bg-google-blue hover:bg-google-blueHover text-white force-text-white font-bold py-2.5 px-4 rounded-lg shadow-lg transition transform active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+              <span id="generateSpinner" class="mini-spinner hidden"></span>
+              <span id="generateIcon" class="material-symbols-outlined text-xl">send</span>
+              <span id="generateText" class="text-sm">生成する</span>
+            </button>
+          </div>
+        </div>
+
+        <div data-side-panel="editor" class="hidden h-full overflow-hidden p-3 md:p-4 flex flex-col min-h-0">
+          <div class="flex flex-col gap-2 flex-1 min-h-0">
+            <div class="flex justify-between items-center">
+              <label id="codeEditorLabel" class="text-xs font-bold ui-muted uppercase tracking-wider">Code
+                Editor</label>
+              <div class="flex items-center gap-2">
+                <span id="retryCount"
+                  class="text-xs text-orange-400 hidden border border-orange-900 bg-orange-900/20 px-2 py-1 rounded-lg">Auto-Retry
+                  Active</span>
+                <button id="geminiImageHeaderBtn" onclick="copyGeminiImagePrompt()"
+                  class="ui-muted canvas-control transition p-2 rounded-lg" title="Geminiで画像生成">
+                  <span class="material-symbols-outlined text-lg">image</span>
+                </button>
+                <button onclick="clearCode()" class="ui-muted canvas-control transition p-2 rounded-lg" title="コードをクリア">
+                  <span class="material-symbols-outlined text-lg">delete_sweep</span>
+                </button>
+                <button onclick="saveHistoryManual()" class="ui-muted canvas-control transition p-2 rounded-lg"
+                  title="履歴に保存">
+                  <span class="material-symbols-outlined text-lg">save</span>
+                </button>
+              </div>
+            </div>
+            <div class="flex flex-col gap-2 flex-1 min-h-0">
+              <div class="relative flex-1 min-h-0">
+                <textarea id="mermaidCode"
+                  class="w-full h-full min-h-0 ui-input border rounded-lg p-3 font-mono text-xs text-green-400 focus:ring-1 focus:ring-blue-500 outline-none resize-none"
+                  placeholder="Mermaidコード出力エリア"></textarea>
+              </div>
+              <div class="grid grid-cols-2 gap-2 mt-auto flex-shrink-0">
+                <button onclick="renderDiagram()"
+                  class="w-full canvas-glass canvas-control text-sm h-10 rounded-lg transition flex items-center justify-center gap-2">
+                  <span class="material-symbols-outlined text-xl">sync</span>
+                  <span id="previewUpdateText" class="text-xs sm:text-sm whitespace-nowrap">プレビュー更新</span>
+                </button>
+                <button id="geminiImageBtn" onclick="copyGeminiImagePrompt()"
+                  class="w-full canvas-glass canvas-control text-sm h-10 rounded-lg transition flex items-center justify-center gap-2"
+                  title="Geminiで画像生成">
+                  <span class="material-symbols-outlined text-xl">image</span>
+                  <span id="geminiImageBtnText" class="text-xs sm:text-sm whitespace-nowrap">Geminiで画像生成</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div data-side-panel="history" class="hidden h-full overflow-y-auto p-3 md:p-4 custom-scrollbar">
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between">
+              <label class="text-xs font-bold ui-muted uppercase tracking-wider flex items-center gap-1">
+                <span class="material-symbols-outlined text-sm">history</span> <span
+                  id="historyLabelText">History</span>
+              </label>
+              <div class="flex items-center gap-2">
+                <div id="historyStatus" class="hidden items-center gap-1 text-xs ui-muted">
+                  <span class="mini-spinner"></span>
+                  <span id="historyStatusText">Loading...</span>
+                </div>
+                <button id="refreshHistoryBtn" onclick="refreshHistory()"
+                  class="ui-muted canvas-control transition p-2 rounded-lg" title="履歴を更新">
+                  <span class="material-symbols-outlined text-lg">refresh</span>
+                </button>
+                <button id="clearHistoryBtn" onclick="clearHistory()"
+                  class="ui-muted canvas-control transition p-2 rounded-lg" title="履歴を全削除">
+                  <span class="material-symbols-outlined text-lg">delete</span>
+                </button>
+              </div>
+            </div>
+	            <div class="relative">
+	              <div id="historyList" class="flex flex-col gap-2"></div>
+	              <div id="historyOverlay"
+	                class="history-overlay hidden absolute inset-0 rounded-xl flex items-center justify-center">
+	                <div class="flex items-center gap-2 ui-surface rounded-lg px-3 py-2 shadow-lg">
+	                  <span class="mini-spinner"></span>
+	                  <span id="historyOverlayText" class="text-xs font-bold">Updating...</span>
+	                </div>
+	              </div>
+	            </div>
+	            <button id="historyLoadMoreBtn" type="button" onclick="loadMoreHistory()"
+	              class="hidden w-full canvas-glass canvas-control text-sm h-10 rounded-lg transition flex items-center justify-center gap-2 mt-2">
+	              <span class="material-symbols-outlined text-lg">expand_more</span>
+	              <span id="historyLoadMoreText" class="text-xs sm:text-sm whitespace-nowrap">さらに読み込む</span>
+	            </button>
+	          </div>
+	        </div>
+	      </div>
+	    </div>
+  </div>
