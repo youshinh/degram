@@ -2,12 +2,12 @@
 
 De:gramは、AI (Gemini) を活用してテキストや画像からMermaid.js形式の図解（ダイアグラム）を自動生成、編集、出力するためのGoogle Apps Script (GAS) アプリケーションです。
 
-![De:gram Screenshot](https://via.placeholder.com/800x450?text=De:gram+UI+Preview) <!-- 今後実際のスクリーンショットに差し替えることを推奨 -->
+![De:gram Screenshot](./img/Screenshot.png)
 
 ## 主な機能
 
 - **AIによる図解生成**: 自然言語による説明や、画像ファイルの内容からMermaidコードを生成します。
-- **マルチモデル対応**: Gemini 1.5 Flash / Flash-lite / Pro を切り替えて利用可能。
+- **Gemini Flash-lite 活用**: 最新の軽量・高速モデル gemini-flash-lite-latest を使用して、安定した生成を実現しています。
 - **リアルタイム編集**: 生成されたMermaidコードをその場で修正し、プレビューに反映できます。
 - **ビジュアル編集機能**: フローチャートなどの一部の図解では、SVG上の要素を直接クリックしてラベル編集やエッジの追加が可能です。
 - **多彩なエクスポート**: ダイアグラムをPNG、SVG、またはAI生成による高品質な画像（ビジネス、漫画風、手書き風など）として出力。
@@ -61,6 +61,14 @@ De:gramは、AI (Gemini) を活用してテキストや画像からMermaid.js形
 2. 必要に応じて画像ファイルを添付します。
 3. 「Generate」ボタンを押すと、AIがダイアグラムを生成します。
 4. 右側のプレビューエリアで図を確認・調整し、必要に応じて「Download」から保存します。
+
+## 生成例 (Generation Example)
+
+### プロンプト入力と画像添付
+![Prompt Example](./img/gen_prompt.png)
+
+### 生成されたダイアグラム
+![Output Example](./img/gen_output.png)
 
 ## 技術スタック
 - **Frontend**: HTML5, Vanilla JavaScript, Tailwind CSS, Polyfill (Lucide Icons, Mermaid.js)

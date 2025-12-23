@@ -556,6 +556,7 @@
         syncFlowOnlyControls(codeEl.value || "")
       );
 
+    const typeEl = document.getElementById("diagramTypeSelect");
     if (typeEl)
       typeEl.addEventListener("change", () => updateAdvancedSummary());
 
@@ -3723,10 +3724,12 @@
         document.getElementById("userInput").value = item.prompt || "";
         document.getElementById("mermaidCode").value = item.code || "";
         syncFlowOnlyControls(item.code || "");
-        if (item.diagramType)
-          document.getElementById("diagramTypeSelect").value = item.diagramType;
-        if (item.model)
-          document.getElementById("modelSelect").value = item.model;
+        const diagTypeEl = document.getElementById("diagramTypeSelect");
+        if (item.diagramType && diagTypeEl)
+          diagTypeEl.value = item.diagramType;
+        const modelEl = document.getElementById("modelSelect");
+        if (item.model && modelEl)
+          modelEl.value = item.model;
         if (item.theme)
           localStorage.setItem(
             DIAGRAM_THEME_KEY,
