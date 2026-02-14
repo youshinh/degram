@@ -180,8 +180,8 @@
 
       <div class="flex-1 min-h-0 overflow-hidden">
         <div data-side-panel="create" class="h-full overflow-hidden flex flex-col">
-          <div class="flex-1 min-h-0 overflow-y-auto p-3 md:p-4 custom-scrollbar grid gap-4 md:gap-5">
-            <div class="flex flex-col gap-2">
+          <div class="flex-1 min-h-0 overflow-y-auto p-3 md:p-4 custom-scrollbar flex flex-col gap-4 md:gap-5">
+            <div class="flex flex-col gap-2 flex-1 min-h-0">
               <div class="flex items-center justify-between gap-2">
                 <label id="promptLabel" class="text-xs font-bold ui-muted uppercase tracking-wider">Prompt</label>
                 <div class="flex items-center gap-1">
@@ -189,15 +189,11 @@
                     title="プロンプトをクリア">
                     <span class="material-symbols-outlined text-lg">clear</span>
                   </button>
-                  <button onclick="newDiagram()" class="ui-muted canvas-control transition p-2 rounded-lg"
-                    title="新規作成（入力/コード/図をクリア）">
-                    <span class="material-symbols-outlined text-lg">note_add</span>
-                  </button>
                 </div>
               </div>
 
               <textarea id="userInput"
-                class="w-full h-[28vh] md:h-[38vh] min-h-[200px] md:min-h-[280px] max-h-[520px] ui-input border rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none transition placeholder-slate-500"
+                class="w-full flex-1 min-h-[260px] md:min-h-[320px] max-h-[640px] ui-input border rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none transition placeholder-slate-500"
                 placeholder="システム要件、フロー、または画像を添付..."></textarea>
 
               <div class="flex items-center gap-2">
@@ -222,11 +218,7 @@
             </div>
 
             <div class="canvas-glass rounded-lg p-3">
-              <div class="select-none flex items-center justify-between gap-2 px-1 py-1">
-                <span id="advancedLabel" class="text-xs font-extrabold tracking-wider ui-muted">Advanced</span>
-                <span id="advancedSummaryText" class="text-xs ui-muted truncate">Auto • Lite</span>
-              </div>
-              <div class="mt-2 grid gap-2">
+              <div class="grid gap-2">
                 <div class="flex gap-2">
                   <div class="flex-1 flex flex-col gap-1 min-w-[140px]">
                     <div class="flex items-center justify-between gap-2">
@@ -327,10 +319,6 @@
                   <span class="mini-spinner"></span>
                   <span id="historyStatusText">Loading...</span>
                 </div>
-                <button id="refreshHistoryBtn" onclick="refreshHistory()"
-                  class="ui-muted canvas-control transition p-2 rounded-lg" title="履歴を更新">
-                  <span class="material-symbols-outlined text-lg">refresh</span>
-                </button>
                 <button id="clearHistoryBtn" onclick="clearHistory()"
                   class="ui-muted canvas-control transition p-2 rounded-lg" title="履歴を全削除">
                   <span class="material-symbols-outlined text-lg">delete</span>

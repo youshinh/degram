@@ -17,6 +17,9 @@
     addMode: false,
     from: null,
   };
+  const RENDER_INFLIGHT_KEY = "diagram.render.inflight";
+  let isRenderRunning = false;
+  let queuedRenderAutoRepair = null;
 
   function syncFlowOnlyControls(codeOverride) {
     const codeEl = document.getElementById("mermaidCode");
@@ -24,8 +27,8 @@
       typeof codeOverride === "string"
         ? codeOverride
         : codeEl
-        ? codeEl.value || ""
-        : "";
+          ? codeEl.value || ""
+          : "";
     const isFlow =
       typeof isFlowchartLike === "function" ? isFlowchartLike(code) : false;
 
@@ -73,7 +76,7 @@
       if (typeof textEditResolve === "function") {
         try {
           textEditResolve(null);
-        } catch (e) {}
+        } catch (e) { }
       }
       textEditResolve = resolve;
     });
@@ -193,7 +196,7 @@
           localStorage.getItem(
             "diagram.imagePrompt.custom." + selectEl.value
           ) || "";
-      } catch (e) {}
+      } catch (e) { }
     };
 
     modal.classList.remove("hidden");
@@ -204,7 +207,7 @@
       if (typeof imagePromptResolve === "function") {
         try {
           imagePromptResolve(null);
-        } catch (e) {}
+        } catch (e) { }
       }
       imagePromptResolve = resolve;
     });
@@ -221,11 +224,11 @@
     const isSubmit = value === "__SUBMIT__";
     const payload = isSubmit
       ? {
-          lang: String(langEl.value || "auto"),
-          styleId: String(selectEl.value || "business"),
-          styleCustom: String(customEl.value || ""),
-          extraNegatives: String(negEl.value || ""),
-        }
+        lang: String(langEl.value || "auto"),
+        styleId: String(selectEl.value || "business"),
+        styleCustom: String(customEl.value || ""),
+        extraNegatives: String(negEl.value || ""),
+      }
       : null;
 
     if (isSubmit) {
@@ -240,7 +243,7 @@
           "diagram.imagePrompt.negatives",
           payload.extraNegatives
         );
-      } catch (e) {}
+      } catch (e) { }
     }
 
     modal.classList.add("hidden");
@@ -262,9 +265,6 @@
     s = s.replace(/'/g, "’");
     if (s.length > 240) s = s.slice(0, 240);
     return s;
-  }
-  function escapeRegex(str) {
-    return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   function getFlowchartNodeId(node) {
     if (!node) return "";
@@ -297,7 +297,103 @@
       { timeoutMs: 1800 }
     );
   }
-  function upsertFlowchartEdge(code, from, to, label) {
+  function normalizeFlowchartEdgeLabel(text) {
+    let s = String(text == null ? "" : text).trim();
+    if (!s) return "";
+    s = s.replace(/\s+/g, " ");
+    if (
+      (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') ||
+      (s.length >= 2 && s[0] === "'" && s[s.length - 1] === "'")
+    ) {
+      s = s.slice(1, -1).trim();
+    }
+    return s;
+  }
+  function parseFlowchartEdgeLine(line) {
+    const src = String(line || "");
+    const id = "([A-Za-z0-9_.-]+)";
+    const edgeEnd = "(?=$|\\s|[^A-Za-z0-9_.-])";
+    const sourceDecoration =
+      "(?:\\s*(?:\\[\\[[^\\]]*\\]\\]|\\(\\([^\\)]*\\)\\)|\\[[^\\]]*\\]|\\{[^\\}]*\\}|\\([^\\)]*\\)))?";
+
+    let m = src.match(
+      new RegExp(
+        "^\\s*" +
+        id +
+        sourceDecoration +
+        "\\s*(?:--+>|==+>|-\\.->)\\s*\\|([^|]*)\\|\\s*" +
+        id +
+        edgeEnd
+      )
+    );
+    if (m) {
+      return {
+        from: m[1],
+        to: m[3],
+        label: normalizeFlowchartEdgeLabel(m[2]),
+        rawLabel: String(m[2] || "").trim(),
+      };
+    }
+
+    m = src.match(
+      new RegExp(
+        "^\\s*" + id + sourceDecoration + "\\s*--\\s*(.*?)\\s*-->\\s*" + id + edgeEnd
+      )
+    );
+    if (m) {
+      return {
+        from: m[1],
+        to: m[3],
+        label: normalizeFlowchartEdgeLabel(m[2]),
+        rawLabel: String(m[2] || "").trim(),
+      };
+    }
+
+    m = src.match(
+      new RegExp(
+        "^\\s*" + id + sourceDecoration + "\\s*(?:--+>|==+>|-\\.->)\\s*" + id + edgeEnd
+      )
+    );
+    if (m) {
+      return {
+        from: m[1],
+        to: m[2],
+        label: "",
+        rawLabel: "",
+      };
+    }
+
+    return null;
+  }
+  function findFlowchartEdgeLineIndex(lines, from, to, previousLabel) {
+    const f = String(from || "").trim();
+    const t = String(to || "").trim();
+    if (!f || !t) return -1;
+
+    const targetLabel = normalizeFlowchartEdgeLabel(previousLabel);
+    const matches = [];
+    for (let i = 0; i < lines.length; i++) {
+      const parsed = parseFlowchartEdgeLine(lines[i]);
+      if (!parsed) continue;
+      if (parsed.from === f && parsed.to === t) {
+        matches.push({ index: i, parsed });
+      }
+    }
+    if (!matches.length) return -1;
+    if (targetLabel) {
+      for (let i = 0; i < matches.length; i++) {
+        if (matches[i].parsed.label === targetLabel) return matches[i].index;
+      }
+    }
+    if (matches.length === 1) return matches[0].index;
+    if (!targetLabel) {
+      for (let i = 0; i < matches.length; i++) {
+        if (!matches[i].parsed.label) return matches[i].index;
+      }
+    }
+    return matches[0].index;
+  }
+  function upsertFlowchartEdge(code, from, to, label, previousLabel) {
     const f = String(from || "").trim();
     const t = String(to || "").trim();
     if (!f || !t) return code;
@@ -307,43 +403,182 @@
       : f + " --> " + t;
 
     const lines = String(code || "").split(/\r?\n/);
-    const re = new RegExp(
-      "^\\s*" +
-        escapeRegex(f) +
-        "\\s*(?:--+>|--+|==+>)\\s*(?:\\|[^|]*\\|\\s*)?" +
-        escapeRegex(t) +
-        "(?:\\s|$)"
-    );
-    for (let i = 0; i < lines.length; i++) {
-      if (re.test(lines[i])) {
-        lines[i] = newLine;
-        return lines.join("\n");
-      }
+    const idx = findFlowchartEdgeLineIndex(lines, f, t, previousLabel);
+    if (idx >= 0) {
+      const indent = (lines[idx].match(/^\s*/) || [""])[0];
+      lines[idx] = indent + newLine;
+      return lines.join("\n");
     }
     lines.push(newLine);
     return lines.join("\n");
   }
-  function getFlowchartEdgeEndpointsFromSvg(el) {
+  function parseFlowchartEdgesFromCode(code) {
+    const lines = String(code || "").split(/\r?\n/);
+    const edges = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = String(lines[i] || "");
+      const parsed = parseFlowchartEdgeLine(line);
+      if (!parsed) continue;
+      edges.push({
+        from: parsed.from,
+        to: parsed.to,
+        label: parsed.label,
+        rawLabel: parsed.rawLabel,
+        lineIndex: i,
+        raw: line,
+      });
+    }
+    return edges;
+  }
+  function findEdgeByUniqueLabel(code, labelText) {
+    const target = normalizeFlowchartEdgeLabel(labelText);
+    if (!target) return null;
+    const edges = parseFlowchartEdgesFromCode(code).filter(
+      (e) => normalizeFlowchartEdgeLabel(e.label) === target
+    );
+    if (edges.length === 1) return { from: edges[0].from, to: edges[0].to };
+    return null;
+  }
+  function removeFlowchartEdge(code, from, to, previousLabel) {
+    const f = String(from || "").trim();
+    const t = String(to || "").trim();
+    if (!f || !t) return { code: String(code || ""), removed: false };
+    const lines = String(code || "").split(/\r?\n/);
+    const idx = findFlowchartEdgeLineIndex(lines, f, t, previousLabel);
+    if (idx < 0) return { code: lines.join("\n"), removed: false };
+    lines.splice(idx, 1);
+    return { code: lines.join("\n"), removed: true };
+  }
+  function extractFlowchartEdgeEndpointsFromText(text) {
+    const s = String(text || "").trim();
+    if (!s) return null;
+
+    let m = s.match(
+      /(?:^|[\s,;])LS[-_]?([A-Za-z0-9_.-]+)(?:[\s,;].*?)LE[-_]?([A-Za-z0-9_.-]+)(?:$|[\s,;])/i
+    );
+    if (m) return { from: m[1], to: m[2] };
+
+    m = s.match(
+      /(?:^|[\s,;])LE[-_]?([A-Za-z0-9_.-]+)(?:[\s,;].*?)LS[-_]?([A-Za-z0-9_.-]+)(?:$|[\s,;])/i
+    );
+    if (m) return { from: m[2], to: m[1] };
+
+    m = s.match(
+      /(?:^|[^A-Za-z0-9_.-])L[-_]+([A-Za-z0-9_.]+)[-_]+([A-Za-z0-9_.]+)(?:[-_]+\d+)?(?:$|[^A-Za-z0-9_.-])/i
+    );
+    if (m) return { from: m[1], to: m[2] };
+
+    m = s.match(/\b([A-Za-z0-9_.-]+)\b\s*[-.]*-+>?\s*\b([A-Za-z0-9_.-]+)\b/);
+    if (m) return { from: m[1], to: m[2] };
+
+    return null;
+  }
+  function getFlowchartEdgeEndpointsFromSvg(el, code) {
     if (!el || !el.closest) return null;
     const edgeGroup = el.closest("g.edgePath") || el.closest("g.edgeLabel");
     if (!edgeGroup) return null;
-    const titleEl = edgeGroup.querySelector
-      ? edgeGroup.querySelector("title")
-      : null;
-    const title =
-      titleEl && titleEl.textContent ? String(titleEl.textContent).trim() : "";
-    const m1 = title.match(
-      /\b([A-Za-z0-9_]+)\b\s*[-.]*-+>?\s*\b([A-Za-z0-9_]+)\b/
-    );
-    if (m1) return { from: m1[1], to: m1[2] };
-    const path = edgeGroup.querySelector
-      ? edgeGroup.querySelector("path")
-      : null;
-    const pid = path && path.getAttribute ? path.getAttribute("id") || "" : "";
-    if (pid && (pid.startsWith("L-") || pid.startsWith("L_"))) {
-      const parts = pid.replace(/^L[-_]/, "").split(/[-_]/);
-      if (parts.length >= 2) return { from: parts[0], to: parts[1] };
+
+    const candidates = [];
+    const pushCandidate = (v) => {
+      const s = String(v || "").trim();
+      if (!s) return;
+      candidates.push(s);
+    };
+
+    let cur = edgeGroup;
+    for (let depth = 0; cur && depth < 4; depth++) {
+      if (cur.getAttribute) {
+        pushCandidate(cur.getAttribute("id"));
+        pushCandidate(cur.getAttribute("class"));
+        pushCandidate(cur.getAttribute("data-id"));
+      }
+      const tEl = cur.querySelector ? cur.querySelector("title") : null;
+      if (tEl && tEl.textContent) pushCandidate(tEl.textContent);
+      cur = cur.parentElement;
     }
+
+    const path = edgeGroup.querySelector ? edgeGroup.querySelector("path") : null;
+    if (path && path.getAttribute) {
+      pushCandidate(path.getAttribute("id"));
+      pushCandidate(path.getAttribute("class"));
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      const ep = extractFlowchartEdgeEndpointsFromText(candidates[i]);
+      if (ep) return ep;
+    }
+
+    // Fallback 1: edge label text uniquely maps to one edge in code.
+    const labelTextEl = edgeGroup.querySelector ? edgeGroup.querySelector("text") : null;
+    const labelText =
+      labelTextEl && labelTextEl.textContent
+        ? String(labelTextEl.textContent).trim()
+        : "";
+    if (code) {
+      const byLabel = findEdgeByUniqueLabel(code, labelText);
+      if (byLabel) return byLabel;
+    }
+
+    // Fallback 2: map clicked edge visual order to parsed edge order.
+    if (code) {
+      const allEdges = parseFlowchartEdgesFromCode(code);
+      if (allEdges.length) {
+        const output = document.getElementById("diagram-output");
+        if (output) {
+          const isPath = edgeGroup.classList && edgeGroup.classList.contains("edgePath");
+          const selector = isPath ? "g.edgePath" : "g.edgeLabel";
+          const groups = Array.prototype.slice.call(output.querySelectorAll(selector));
+          const edges = isPath
+            ? allEdges
+            : allEdges.filter((e) => String(e.label || "").trim() !== "");
+          const idx = groups.indexOf(edgeGroup);
+          if (idx >= 0 && idx < edges.length) {
+            return { from: edges[idx].from, to: edges[idx].to };
+          }
+        }
+      }
+    }
+
+    // Fallback 3: for edgeLabel clicks, map to edgePath by visual index and parse edgePath tokens.
+    if (code && edgeGroup.classList && edgeGroup.classList.contains("edgeLabel")) {
+      const output = document.getElementById("diagram-output");
+      if (output) {
+        const labelGroups = Array.prototype.slice.call(
+          output.querySelectorAll("g.edgeLabel")
+        );
+        const edgePaths = Array.prototype.slice.call(
+          output.querySelectorAll("g.edgePath")
+        );
+        const idx = labelGroups.indexOf(edgeGroup);
+        if (idx >= 0 && idx < edgePaths.length) {
+          const gp = edgePaths[idx];
+          const items = [];
+          if (gp && gp.getAttribute) {
+            items.push(gp.getAttribute("id") || "");
+            items.push(gp.getAttribute("class") || "");
+            items.push(gp.getAttribute("data-id") || "");
+          }
+          const p = gp && gp.querySelector ? gp.querySelector("path") : null;
+          if (p && p.getAttribute) {
+            items.push(p.getAttribute("id") || "");
+            items.push(p.getAttribute("class") || "");
+          }
+          for (let i = 0; i < items.length; i++) {
+            const ep = extractFlowchartEdgeEndpointsFromText(items[i]);
+            if (ep) return ep;
+          }
+        }
+      }
+    }
+
+    try {
+      console.warn("[EdgeResolve] failed to resolve endpoints", {
+        candidates,
+        labelText,
+        parsedEdgeCount: code ? parseFlowchartEdgesFromCode(code).length : 0,
+      });
+    } catch (_) { }
+
     return null;
   }
 
@@ -413,7 +648,7 @@
   function getIsReady() {
     const input =
       document.getElementById("userInput") &&
-      document.getElementById("userInput").value
+        document.getElementById("userInput").value
         ? document.getElementById("userInput").value.trim()
         : "";
     return !!input || !!currentFile;
@@ -502,8 +737,8 @@
         payload && payload.message
           ? payload.message
           : typeof t === "function"
-          ? t("generated")
-          : "Generated"
+            ? t("generated")
+            : "Generated"
       );
       window.setTimeout(() => {
         if (appState === APP_STATE.success)
@@ -528,6 +763,15 @@
   }
 
   window.onload = function () {
+    let skipAutoRenderOnBoot = false;
+    try {
+      // If previous page was reloaded while rendering, avoid immediate auto-render loop.
+      if (sessionStorage.getItem(RENDER_INFLIGHT_KEY) === "1") {
+        skipAutoRenderOnBoot = true;
+      }
+      sessionStorage.removeItem(RENDER_INFLIGHT_KEY);
+    } catch (_) { }
+
     if (typeof mermaid !== "undefined") {
       mermaid.initialize({
         startOnLoad: false,
@@ -540,25 +784,29 @@
     setupPanZoom();
     setupPanelResize();
     loadUiPrefs();
-    changeTheme();
+    changeTheme({ skipRender: skipAutoRenderOnBoot });
+    if (skipAutoRenderOnBoot) {
+      showToast(
+        "info",
+        "前回の描画処理が中断されたため、起動時の自動プレビューをスキップしました。"
+      );
+    }
     handleResize();
     refreshHistory();
     syncAppStateFromInputs();
     updateFloatingDockVisibility();
 
     const inputEl = document.getElementById("userInput");
-    if (inputEl)
+    if (inputEl) {
       inputEl.addEventListener("input", () => syncAppStateFromInputs());
+      inputEl.addEventListener("paste", (e) => handlePaste(e));
+    }
 
     const codeEl = document.getElementById("mermaidCode");
     if (codeEl)
       codeEl.addEventListener("input", () =>
         syncFlowOnlyControls(codeEl.value || "")
       );
-
-    const typeEl = document.getElementById("diagramTypeSelect");
-    if (typeEl)
-      typeEl.addEventListener("change", () => updateAdvancedSummary());
 
     document.addEventListener("keydown", (e) => {
       if (!e) return;
@@ -610,6 +858,12 @@
   function handleFileSelect(input) {
     const file = input.files[0];
     if (!file) return;
+    processFile(file);
+    input.value = ""; // Reset for same file selection
+  }
+
+  function processFile(file) {
+    if (!file) return;
 
     // Size check (10MB warning for GAS payload safety)
     if (file.size > 10 * 1024 * 1024) {
@@ -618,12 +872,10 @@
         "ファイルサイズが大きすぎます (10MB以下推奨)。GASの制限によりエラーになる可能性があります。",
         { timeoutMs: 5200 }
       );
-      // 続行は許可するが警告
     }
 
     const reader = new FileReader();
     reader.onload = function (e) {
-      // e.target.result look like: "data:image/png;base64,....."
       const base64String = e.target.result;
       const delimiterIndex = base64String.indexOf(",");
       const contentType = base64String
@@ -634,13 +886,28 @@
       currentFile = {
         mimeType: contentType,
         data: rawBase64,
-        filename: file.name,
+        filename: file.name || "clipboard-data",
       };
 
       updateFileUI();
       syncAppStateFromInputs();
     };
     reader.readAsDataURL(file);
+  }
+
+  function handlePaste(e) {
+    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file') {
+        const file = items[i].getAsFile();
+        if (file) {
+          processFile(file);
+          // Optional: Prevent default if we want to stop text paste when a file is pasted
+          // However, usually we want to allow text paste too if it contains text.
+          // In most browsers, if you copy a file, it's just a file.
+        }
+      }
+    }
   }
 
   function clearFile() {
@@ -759,7 +1026,7 @@
     setSideTab(localStorage.getItem(SIDE_TAB_KEY) || "create", {
       store: false,
     });
-    updateAdvancedSummary();
+    updateApiKeyStatusUI();
   }
 
   function getFontSize() {
@@ -784,19 +1051,6 @@
       const active = btn.getAttribute("data-font-size") === current;
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
-  }
-
-  function updateAdvancedSummary() {
-    const typeEl = document.getElementById("diagramTypeSelect");
-    const out = document.getElementById("advancedSummaryText");
-    if (!typeEl || !out) return;
-    const typeText =
-      typeEl.options &&
-      typeEl.selectedIndex >= 0 &&
-      typeEl.options[typeEl.selectedIndex]
-        ? typeEl.options[typeEl.selectedIndex].textContent
-        : typeEl.value || "";
-    out.textContent = String(typeText || "Auto");
   }
 
   function setSideTab(tab, opts) {
@@ -1038,8 +1292,8 @@
       opts && Number.isFinite(opts.timeoutMs)
         ? opts.timeoutMs
         : type === "error"
-        ? 5200
-        : 3200;
+          ? 5200
+          : 3200;
 
     const el = document.createElement("div");
     el.className =
@@ -1102,7 +1356,9 @@
     if (result && typeof action === "function") {
       try {
         action();
-      } catch (e) {}
+      } catch (e) {
+        console.error("Confirm action error:", e);
+      }
     }
     const modal = document.getElementById("confirmModal");
     if (modal) {
@@ -1128,7 +1384,7 @@
     modal.classList.remove("flex");
   }
   function setSettingsTab(tab) {
-    const allowed = new Set(["ui", "guide"]);
+    const allowed = new Set(["ui", "guide", "apikey"]);
     const current = allowed.has(tab) ? tab : "ui";
     localStorage.setItem("diagram.settingsTab", current);
 
@@ -1478,6 +1734,8 @@
       typeC4Desc: "システムの関係（コンテキスト）を表現します。",
       typeMindmap: "Mindmap",
       typeMindmapDesc: "アイデアを階層構造で整理します。",
+      copyErrorLog: "エラーログをコピー",
+      errorLogCopied: "エラーログをクリップボードにコピーしました",
     },
     en: {
       modalCancel: "Cancel",
@@ -1598,6 +1856,8 @@
       typeC4Desc: "Shows system context relationships.",
       typeMindmap: "Mindmap",
       typeMindmapDesc: "Organizes ideas hierarchically.",
+      copyErrorLog: "Copy Error Log",
+      errorLogCopied: "Error log copied to clipboard",
     },
   };
   function getCurrentLang() {
@@ -1730,8 +1990,6 @@
     const historyLabel = document.getElementById("historyLabelText");
     if (historyLabel) historyLabel.textContent = t.history;
 
-    const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
-    if (refreshHistoryBtn) refreshHistoryBtn.title = t.historyRefreshTitle;
     const clearHistoryBtn = document.getElementById("clearHistoryBtn");
     if (clearHistoryBtn) clearHistoryBtn.title = t.historyClearTitle;
     const historyStatusText = document.getElementById("historyStatusText");
@@ -1812,9 +2070,6 @@
     );
     if (historySettingsLabel)
       historySettingsLabel.textContent = t.historySettingsLabel;
-    const historyRefreshText = document.getElementById("historyRefreshText");
-    if (historyRefreshText)
-      historyRefreshText.textContent = t.historyRefreshText;
     const historyClearText = document.getElementById("historyClearText");
     if (historyClearText) historyClearText.textContent = t.historyClearText;
     const historyLoadMoreText = document.getElementById("historyLoadMoreText");
@@ -1829,9 +2084,6 @@
       if (key === "editor") btn.textContent = t.sideTabEditor || "Editor";
       if (key === "history") btn.textContent = t.sideTabHistory || "History";
     });
-    const advancedLabel = document.getElementById("advancedLabel");
-    if (advancedLabel) advancedLabel.textContent = t.advanced || "Advanced";
-
     // If the type guide has been rendered once, refresh labels in-place.
     if (typeHelpHasRendered) renderTypeHelp();
     syncLanguageButtons();
@@ -1917,10 +2169,12 @@
     onPaletteChange();
   }
 
-  function changeTheme() {
+  function changeTheme(options) {
+    const opts = options && typeof options === "object" ? options : {};
     const theme = getDiagramTheme();
     updateThemeChips(theme);
-    if (document.getElementById("mermaidCode").value) renderDiagram();
+    if (!opts.skipRender && document.getElementById("mermaidCode").value)
+      renderDiagram();
   }
 
   function setupPanZoom() {
@@ -2153,28 +2407,55 @@
         model,
         diagramType,
         currentFile,
-        null,
-        null,
-        null,
-        getCurrentLang()
+        null, // currentCode
+        null, // errorMessage
+        null, // retryHistory
+        getCurrentLang(),
+        getApiKey(),
+        null // temperatureOverride
       );
   }
 
   function onSuccess(code) {
-    document.getElementById("mermaidCode").value = code;
+    const safeCode = repairCommonSyntaxErrors(String(code || ""));
+    document.getElementById("mermaidCode").value = safeCode;
     renderDiagram(true);
   }
 
   function onFailure(error) {
     showLoading(false);
     togglePanel(true);
-    pendingHistorySave = false;
+    if (pendingHistorySave) {
+      const msg = error && error.message ? error.message : String(error);
+      saveHistory({ error: msg, reason: "api_error" });
+      pendingHistorySave = false;
+    }
     setAppState(APP_STATE.error, {
       message: error && error.message ? error.message : String(error),
     });
   }
 
+  function buildRecoveryErrorContext(error, codeText) {
+    const msg = error && error.message ? String(error.message) : String(error || "");
+    const src = String(codeText || "");
+    const out = [];
+    if (msg) out.push(msg);
+    const hash = error && error.hash ? error.hash : null;
+    const loc = hash && hash.loc ? hash.loc : null;
+    if (loc && Number.isFinite(loc.first_line)) {
+      const lineNo = Math.max(1, Number(loc.first_line));
+      const lines = src.split(/\r?\n/);
+      const lineText = lineNo <= lines.length ? String(lines[lineNo - 1] || "").trim() : "";
+      out.push("line " + lineNo + (lineText ? ": " + lineText : ""));
+    }
+    return out.join(" | ").slice(0, 1200);
+  }
+
   function scheduleRenderDiagram(enableAutoRepair) {
+    if (isRenderRunning) {
+      queuedRenderAutoRepair = !!enableAutoRepair || !!queuedRenderAutoRepair;
+      return;
+    }
     showLoading(
       true,
       typeof t === "function" ? t("updatingPreview") : "Updating preview..."
@@ -2189,6 +2470,15 @@
   }
 
   async function renderDiagram(enableAutoRepair = false) {
+    if (isRenderRunning) {
+      queuedRenderAutoRepair = !!enableAutoRepair || !!queuedRenderAutoRepair;
+      return false;
+    }
+    isRenderRunning = true;
+    try {
+      sessionStorage.setItem(RENDER_INFLIGHT_KEY, "1");
+    } catch (_) { }
+
     const wasGenerating = appState === APP_STATE.generating;
     const code = document.getElementById("mermaidCode").value;
     const outputDiv = document.getElementById("diagram-output");
@@ -2198,7 +2488,8 @@
     console.log("Raw Code from Textarea:", code); // 描画直前のコード
 
     syncFlowOnlyControls(code);
-    const layoutedCode = applyResponsiveLayout(code);
+    const repairedCode = repairCommonSyntaxErrors(code);
+    const layoutedCode = applyResponsiveLayout(repairedCode);
 
     console.log("Layout Adjusted Code:", layoutedCode); // レイアウト調整後のコード
 
@@ -2250,22 +2541,37 @@
         });
         if (repairHistory.length > 6) repairHistory = repairHistory.slice(-6);
 
-        const canRetryWithSelected = currentRetry < MAX_RETRIES;
+        const canRetry = currentRetry < MAX_RETRIES;
 
-        let nextModel = null;
-        if (canRetryWithSelected) {
+        if (canRetry) {
           currentRetry++;
-          nextModel = selectedModel;
+
+          let nextModel = selectedModel;
+          const userKey = getApiKey();
+
+          // 3rd retry: Upgrade to Flash ONLY if personal key exists
+          if (currentRetry >= 3 && userKey) {
+            nextModel = "flash";
+          }
+
+          // Temperature override
+          // 1st retry: null (default 0.2)
+          // 2nd retry: 0.5
+          // 3rd retry: 0.7 (if no key upgrade)
+          let nextTemp = null;
+          if (currentRetry === 2) nextTemp = 0.5;
+          if (currentRetry >= 3 && !userKey) nextTemp = 0.7;
+
           document.getElementById("retryCount").classList.remove("hidden");
+          const modelNameDisplay = nextModel === "flash" ? "Flash" : "Flash-Lite";
           showLoading(
             true,
-            "REPAIRING... (" + currentRetry + "/" + MAX_RETRIES + ")"
+            "REPAIRING... (" + currentRetry + "/" + MAX_RETRIES + ") [" + modelNameDisplay + "]"
           );
-        }
 
-        if (nextModel) {
-          // annotate the last history entry with the model we'll use next (helps server-side debugging)
-          repairHistory[repairHistory.length - 1].__nextModel = nextModel;
+          if (repairHistory.length > 0) {
+            repairHistory[repairHistory.length - 1].__nextModel = nextModel;
+          }
 
           google.script.run
             .withSuccessHandler(onSuccess)
@@ -2275,10 +2581,12 @@
               nextModel,
               diagramType,
               currentFile,
-              code,
-              error.message,
+              null, // Force fresh generation (no currentCode)
+              buildRecoveryErrorContext(error, layoutedCode), // Provide richer error context for recovery mode
               JSON.stringify(repairHistory),
-              getCurrentLang()
+              getCurrentLang(),
+              userKey,
+              nextTemp
             );
           return false;
         }
@@ -2286,7 +2594,11 @@
       // fallthrough: auto-repair disabled OR exhausted
       showLoading(false);
       togglePanel(true);
-      pendingHistorySave = false;
+      if (pendingHistorySave) {
+        const msg = error && error.message ? error.message : String(error);
+        saveHistory({ error: msg, reason: "render_error" });
+        pendingHistorySave = false;
+      }
       outputDiv.innerHTML = "";
       outputDiv.classList.add("opacity-0");
       const msg =
@@ -2298,6 +2610,23 @@
         syncAppStateFromInputs();
       }
       return false;
+    } finally {
+      isRenderRunning = false;
+      try {
+        sessionStorage.removeItem(RENDER_INFLIGHT_KEY);
+      } catch (_) { }
+
+      if (queuedRenderAutoRepair !== null) {
+        const queued = queuedRenderAutoRepair;
+        queuedRenderAutoRepair = null;
+        window.setTimeout(() => {
+          Promise.resolve(renderDiagram(queued)).catch((e) => {
+            console.error("Render failed (queued):", e);
+            showLoading(false);
+            showToast("error", e && e.message ? e.message : String(e));
+          });
+        }, 0);
+      }
     }
   }
 
@@ -2322,11 +2651,24 @@
         ? target.closest("g.edgeLabel") || target.closest("g.edgePath")
         : null;
       const node = hasClosest ? target.closest("g.node") : null;
-      if (!edgeHit && !node) return;
+      const textEl = hasClosest ? getEditableTextElementFromTarget(target) : null;
+      if (!edgeHit && !node && !textEl) return;
 
       if (!isFlow) {
-        showToast("info", "編集は Flowchart のみ対応です。", {
-          timeoutMs: 1800,
+        if (!textEl) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const currentText = getTextFromSvgTextElement(textEl);
+        promptTextAsync({
+          title: "ラベルを編集",
+          value: currentText,
+          placeholder: "Label text",
+          hint: "この編集は現在のプレビュー表示に反映されます。",
+        }).then((nextText) => {
+          if (nextText == null) return;
+          const sanitized = sanitizeInlineSvgText(nextText);
+          if (!sanitized) return;
+          setTextOnSvgTextElement(textEl, sanitized);
         });
         return;
       }
@@ -2334,12 +2676,46 @@
       if (edgeHit) {
         e.preventDefault();
         e.stopPropagation();
-        const ep = getFlowchartEdgeEndpointsFromSvg(target);
-        if (!ep) return;
-        const currentLabel =
+        const ep = getFlowchartEdgeEndpointsFromSvg(target, code);
+        if (!ep) {
+          showToast("error", "エッジの接続先を取得できませんでした。別の箇所をクリックしてください。", {
+            timeoutMs: 2200,
+          });
+          return;
+        }
+        let currentLabel =
           edgeHit.querySelector && edgeHit.querySelector("text")
             ? String(edgeHit.querySelector("text").textContent || "").trim()
             : "";
+        if (!currentLabel && code) {
+          const sameEdges = parseFlowchartEdgesFromCode(code).filter(
+            (edge) => edge.from === ep.from && edge.to === ep.to
+          );
+          if (sameEdges.length === 1) {
+            currentLabel = String(sameEdges[0].label || "").trim();
+          }
+        }
+        if (e.altKey) {
+          confirmAsync(ep.from + " → " + ep.to + " を削除しますか？", "エッジ削除").then(
+            (ok) => {
+              if (!ok) return;
+              const latestCode = codeEl ? codeEl.value || "" : code;
+              const removed = removeFlowchartEdge(
+                latestCode,
+                ep.from,
+                ep.to,
+                currentLabel
+              );
+              if (!removed.removed) {
+                showToast("error", "エッジを削除できませんでした", { timeoutMs: 1800 });
+                return;
+              }
+              if (codeEl) codeEl.value = removed.code;
+              scheduleRenderDiagram(false);
+            }
+          );
+          return;
+        }
         promptTextAsync({
           title:
             typeof t === "function"
@@ -2352,11 +2728,42 @@
               : "Edge label (optional)",
           hint:
             typeof t === "function"
-              ? t("emptyMakesNoLabel") + " " + t("submitHint")
-              : "Leave empty to remove the label. Press Ctrl/Cmd+Enter to submit.",
+              ? t("emptyMakesNoLabel") + " /delete: エッジ削除 " + t("submitHint")
+              : "Leave empty to remove the label. Type /delete to delete the edge. Press Ctrl/Cmd+Enter to submit.",
         }).then((next) => {
           if (next == null) return;
-          const updated = upsertFlowchartEdge(code, ep.from, ep.to, next);
+          const rawNext = String(next).trim();
+          if (/^\/delete$/i.test(rawNext)) {
+            confirmAsync(ep.from + " → " + ep.to + " を削除しますか？", "エッジ削除").then(
+              (ok) => {
+                if (!ok) return;
+                const latestCode = codeEl ? codeEl.value || "" : code;
+                const removed = removeFlowchartEdge(
+                  latestCode,
+                  ep.from,
+                  ep.to,
+                  currentLabel
+                );
+                if (!removed.removed) {
+                  showToast("error", "エッジを削除できませんでした", {
+                    timeoutMs: 1800,
+                  });
+                  return;
+                }
+                if (codeEl) codeEl.value = removed.code;
+                scheduleRenderDiagram(false);
+              }
+            );
+            return;
+          }
+          const latestCode = codeEl ? codeEl.value || "" : code;
+          const updated = upsertFlowchartEdge(
+            latestCode,
+            ep.from,
+            ep.to,
+            next,
+            currentLabel
+          );
           if (codeEl) codeEl.value = updated;
           scheduleRenderDiagram(false);
         });
@@ -2399,7 +2806,8 @@
           hint: from + " → " + to,
         }).then((label) => {
           if (label == null) return;
-          const updated = upsertFlowchartEdge(code, from, to, label);
+          const latestCode = codeEl ? codeEl.value || "" : code;
+          const updated = upsertFlowchartEdge(latestCode, from, to, label);
           if (codeEl) codeEl.value = updated;
           scheduleRenderDiagram(false);
         });
@@ -2421,14 +2829,9 @@
         if (nextLabel == null) return;
         const trimmed = sanitizeInlineLabel(nextLabel);
         if (!trimmed) return;
-        setNodeLabelOnSvgNode(node, trimmed);
-        // NOTE: Avoid heavy regex-based code rewrites + rerender here (can freeze on complex diagrams).
-        // Keep this as a lightweight "visual-only" edit on the current SVG.
-        /*
-             interactiveEdits.nodeLabels[nodeId] = trimmed;
-             applyEditsToMermaidCode({ rerender: false });
-             scheduleRenderDiagram(false);
-           */
+        const updated = replaceFlowchartNodeLabel(code, nodeId, trimmed);
+        if (codeEl) codeEl.value = updated;
+        scheduleRenderDiagram(false);
       });
     });
   }
@@ -2440,30 +2843,98 @@
     ).trim();
   }
 
-  function setNodeLabelOnSvgNode(node, label) {
+  function getEditableTextElementFromTarget(target) {
+    if (!target || !target.closest) return null;
+    if (target.tagName && String(target.tagName).toLowerCase() === "text")
+      return target;
+    if (target.tagName && String(target.tagName).toLowerCase() === "tspan") {
+      const p = target.parentElement;
+      if (p && p.tagName && String(p.tagName).toLowerCase() === "text")
+        return p;
+    }
+    return target.closest("text");
+  }
+
+  function getTextFromSvgTextElement(textEl) {
+    if (!textEl) return "";
+    const tspans = textEl.querySelectorAll
+      ? Array.prototype.slice.call(textEl.querySelectorAll("tspan"))
+      : [];
+    if (tspans.length) {
+      return tspans
+        .map((x) => String((x && x.textContent) || ""))
+        .join("\n")
+        .trim();
+    }
+    return String(textEl.textContent || "").trim();
+  }
+
+  function sanitizeInlineSvgText(text) {
+    let s = String(text == null ? "" : text);
+    s = s.replace(/\uFEFF/g, "");
+    s = s.replace(/\r/g, "");
+    s = s.replace(/\n+/g, " ");
+    s = s.replace(/\t/g, " ");
+    s = s.replace(/\u0000/g, "");
+    s = s.replace(/\s+/g, " ");
+    if (s.length > 400) s = s.slice(0, 400);
+    return s.trim();
+  }
+
+  function setTextOnSvgTextElement(textEl, label) {
+    if (!textEl) return;
     var svgNS = "http://www.w3.org/2000/svg";
+    var lines = String(label == null ? "" : label).split("\r").join("").split("\n");
+    var tspans = textEl.querySelectorAll
+      ? Array.prototype.slice.call(textEl.querySelectorAll("tspan"))
+      : [];
+
+    var baseX = textEl.getAttribute ? textEl.getAttribute("x") : null;
+    if ((baseX == null || baseX === "") && tspans.length) {
+      var tx = tspans[0].getAttribute ? tspans[0].getAttribute("x") : null;
+      if (tx != null && tx !== "") baseX = tx;
+    }
+    var dy = "1.2em";
+    if (tspans.length > 1) {
+      var dy1 = tspans[1].getAttribute ? tspans[1].getAttribute("dy") : null;
+      if (dy1) dy = dy1;
+    } else if (tspans.length === 1) {
+      var dy0 = tspans[0].getAttribute ? tspans[0].getAttribute("dy") : null;
+      if (dy0) dy = dy0;
+    }
+
+    var template = tspans.length ? tspans[0].cloneNode(false) : null;
+
+    while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+
+    if (lines.length <= 1) {
+      if (template) {
+        if (baseX != null && baseX !== "") template.setAttribute("x", baseX);
+        template.removeAttribute("dy");
+        template.textContent = lines[0] || "";
+        textEl.appendChild(template);
+      } else {
+        textEl.textContent = lines[0] || "";
+      }
+      return;
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var tspan = template
+        ? template.cloneNode(false)
+        : document.createElementNS(svgNS, "tspan");
+      if (baseX != null && baseX !== "") tspan.setAttribute("x", baseX);
+      if (i === 0) tspan.removeAttribute("dy");
+      if (i > 0) tspan.setAttribute("dy", dy);
+      tspan.textContent = lines[i];
+      textEl.appendChild(tspan);
+    }
+  }
+
+  function setNodeLabelOnSvgNode(node, label) {
     var textEls = node.querySelectorAll ? node.querySelectorAll("text") : [];
     for (var i = 0; i < textEls.length; i++) {
-      var textEl = textEls[i];
-      var tspans = textEl.querySelectorAll
-        ? Array.prototype.slice.call(textEl.querySelectorAll("tspan"))
-        : [];
-      if (!tspans.length) {
-        textEl.textContent = label;
-        continue;
-      }
-      var template = tspans[0];
-      var x = template.getAttribute("x");
-      var dy = template.getAttribute("dy") || "1.2em";
-      for (var j = 0; j < tspans.length; j++) tspans[j].remove();
-      var lines = String(label).split("\r").join("").split("\n");
-      for (var k = 0; k < lines.length; k++) {
-        var tspan = document.createElementNS(svgNS, "tspan");
-        if (x != null) tspan.setAttribute("x", x);
-        if (k > 0) tspan.setAttribute("dy", dy);
-        tspan.textContent = lines[k];
-        textEl.appendChild(tspan);
-      }
+      setTextOnSvgTextElement(textEls[i], label);
     }
   }
 
@@ -2543,29 +3014,29 @@
     const nodeText = pickTextColor(palette.node);
     const paletteVars = isFlow
       ? {
-          primaryColor: palette.node,
-          primaryBorderColor: palette.node,
-          lineColor: palette.edge,
-          primaryTextColor: nodeText,
-        }
+        primaryColor: palette.node,
+        primaryBorderColor: palette.node,
+        lineColor: palette.edge,
+        primaryTextColor: nodeText,
+      }
       : {};
     const themeCSS = isFlow
       ? ".node rect,.node polygon,.node circle,.node ellipse,.node path{fill:" +
-        palette.node +
-        " !important;stroke:" +
-        palette.node +
-        " !important;}" +
-        ".node .label text,.nodeLabel{fill:" +
-        nodeText +
-        " !important;}" +
-        ".edgePath path,.flowchart-link{stroke:" +
-        palette.edge +
-        " !important;}" +
-        "marker path,.arrowheadPath{fill:" +
-        palette.edge +
-        " !important;stroke:" +
-        palette.edge +
-        " !important;}"
+      palette.node +
+      " !important;stroke:" +
+      palette.node +
+      " !important;}" +
+      ".node .label text,.nodeLabel{fill:" +
+      nodeText +
+      " !important;}" +
+      ".edgePath path,.flowchart-link{stroke:" +
+      palette.edge +
+      " !important;}" +
+      "marker path,.arrowheadPath{fill:" +
+      palette.edge +
+      " !important;stroke:" +
+      palette.edge +
+      " !important;}"
       : "";
     const commonThemeVariables = {
       fontFamily: "Arial, system-ui, -apple-system, Segoe UI, sans-serif",
@@ -2656,7 +3127,7 @@
     syncAppStateFromInputs();
     if (codeEl && t.code) {
       codeEl.value = t.code;
-      Promise.resolve(renderDiagram(false)).catch(() => {});
+      Promise.resolve(renderDiagram(false)).catch(() => { });
     }
     const msg =
       lang === "en"
@@ -2666,9 +3137,12 @@
   }
 
   function downloadMD() {
-    const code = document.getElementById("mermaidCode").value;
-    if (!code) return;
-    downloadFile(code, "diagram.md", "text/markdown");
+    const codeEl = document.getElementById("mermaidCode");
+    const raw = codeEl ? codeEl.value : "";
+    const safe = repairCommonSyntaxErrors(String(raw || ""));
+    if (!safe) return;
+    if (codeEl) codeEl.value = safe;
+    downloadFile(safe, "diagram.md", "text/markdown");
   }
   function downloadSVG() {
     const svgElement = document.querySelector("#diagram-output svg");
@@ -2800,10 +3274,10 @@
     ];
     const re = new RegExp(
       "(^|\\n)\\s*(" +
-        keywords
-          .map((k) => k.replace(/[-/\\^$*+?.()|[\\]{}]/g, "\\$&"))
-          .join("|") +
-        ")\\b",
+      keywords
+        .map((k) => k.replace(/[-/\\^$*+?.()|[\\]{}]/g, "\\$&"))
+        .join("|") +
+      ")\\b",
       "i"
     );
     const m = re.exec(src);
@@ -2908,6 +3382,280 @@
       }
     }
     return out;
+  }
+
+  function repairCommonSyntaxErrors(code) {
+    let src = String(code || "");
+    src = src.replace(/\r/g, "");
+    src = src.replace(/\uFEFF/g, "");
+
+    // Mindmap fallback:
+    // If flowchart-like syntax is mixed into mindmap, convert to flowchart TD and continue repair.
+    if (/^\s*mindmap\b/im.test(src) && (/\s-->\s/.test(src) || /^\s*subgraph\b/im.test(src))) {
+      const mmLines = src.split("\n");
+      const out = [];
+      out.push("flowchart TD");
+      for (let i = 0; i < mmLines.length; i++) {
+        const line = String(mmLines[i] || "");
+        if (/^\s*mindmap\b/i.test(line)) continue;
+        if (/^\s*subgraph\b/i.test(line)) continue;
+        if (/^\s*end\s*$/i.test(line)) continue;
+        let cur = line;
+        cur = cur.replace(/^\s*root\s*\(\((.+)\)\)\s*$/i, function (_, label) {
+          return 'ROOT["' + String(label || "").replace(/\\+"/g, "'").replace(/"/g, "'").trim() + '"]';
+        });
+        out.push(cur);
+      }
+      src = out.join("\n");
+    }
+
+    // StateDiagram fallback:
+    // Normalize flowchart-like node decorations and unsupported styled arrows.
+    if (/^\s*stateDiagram-v2\b/im.test(src)) {
+      const stLines = src.split("\n");
+      const stateAlias = new Map(); // id -> label
+      const declaredCompositeStates = new Set();
+      const cleaned = [];
+      for (let i = 0; i < stLines.length; i++) {
+        let line = String(stLines[i] || "");
+        const cm = /^\s*state\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(line);
+        if (cm && cm[1]) declaredCompositeStates.add(String(cm[1]));
+        // styled arrow like --[#red]-> is not supported in some Mermaid versions
+        line = line.replace(/--\s*\[[^\]]*]\s*->/g, "-->");
+
+        // Convert ID["Label"] / ID['Label'] / ID{"Label"} to ID and remember alias.
+        line = line.replace(/([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*"([^"]+)"\s*]/g, function (_, id, label) {
+          stateAlias.set(String(id), String(label));
+          return id;
+        });
+        line = line.replace(/([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*'([^']+)'\s*]/g, function (_, id, label) {
+          stateAlias.set(String(id), String(label));
+          return id;
+        });
+        line = line.replace(/([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*"([^"]+)"\s*}/g, function (_, id, label) {
+          stateAlias.set(String(id), String(label));
+          return id;
+        });
+        line = line.replace(/([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*'([^']+)'\s*}/g, function (_, id, label) {
+          stateAlias.set(String(id), String(label));
+          return id;
+        });
+        line = line.replace(/([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*([^}"']+)\s*}/g, function (_, id, label) {
+          stateAlias.set(String(id), String(label));
+          return id;
+        });
+        cleaned.push(line);
+      }
+
+      // Insert alias definitions right after diagram header.
+      const withAliases = [];
+      let inserted = false;
+      for (let i = 0; i < cleaned.length; i++) {
+        const line = cleaned[i];
+        withAliases.push(line);
+        if (!inserted && /^\s*stateDiagram-v2\b/i.test(line)) {
+          inserted = true;
+          stateAlias.forEach((label, id) => {
+            if (id === "[*]") return;
+            if (!id) return;
+            if (declaredCompositeStates.has(id)) return;
+            const safe = String(label || "").replace(/"/g, "'");
+            withAliases.push('  state "' + safe + '" as ' + id);
+          });
+        }
+      }
+      src = withAliases.join("\n");
+    }
+
+    // pattern: subgraph["Title"] -> subgraph "Title"
+    // reason: Gemini often outputs subgraph["..."] which is invalid Mermaid
+    src = src.replace(/(\s*subgraph)\s*\["([^"]+)"\]:::([^\s]*)/gi, '$1 "$2"');
+    src = src.replace(/(\s*subgraph)\s*\["([^"]+)"\]/gi, '$1 "$2"');
+    src = src.replace(/(\s*subgraph)\s*\['([^']+)'\]/gi, "$1 '$2'");
+
+    // Remove trailing ::: from lines (invalid style attachment to subgraph start)
+    // e.g. subgraph "Title":::
+    const lines = src.split('\n');
+    let autoSubgraphId = 1;
+    let isGantt = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      if (/^\s*gantt\b/i.test(line)) {
+        isGantt = true;
+      }
+
+      if (/^\s*subgraph\b/i.test(line)) {
+        let fixed = line.replace(/:::.*$/, '').replace(/:::\s*$/, '');
+        const m1 = fixed.match(/^(\s*)subgraph\s*\["([^"]+)"\]\s*$/i);
+        const m2 = fixed.match(/^(\s*)subgraph\s*\['([^']+)'\]\s*$/i);
+        const m3 = fixed.match(/^(\s*)subgraph\s+"([^"]+)"\s*$/i);
+        const m4 = fixed.match(/^(\s*)subgraph\s+'([^']+)'\s*$/i);
+        if (m1) {
+          const title = String(m1[2]).replace(/"/g, "'");
+          fixed = `${m1[1]}subgraph SG${autoSubgraphId++}["${title}"]`;
+        } else if (m2) {
+          const title = String(m2[2]).replace(/"/g, "'");
+          fixed = `${m2[1]}subgraph SG${autoSubgraphId++}["${title}"]`;
+        } else if (m3) {
+          const title = String(m3[2]).replace(/"/g, "'");
+          fixed = `${m3[1]}subgraph SG${autoSubgraphId++}["${title}"]`;
+        } else if (m4) {
+          const title = String(m4[2]).replace(/"/g, "'");
+          fixed = `${m4[1]}subgraph SG${autoSubgraphId++}["${title}"]`;
+        }
+        lines[i] = fixed;
+      }
+
+      // Gantt chart: Task names cannot contain colons unless it's the separator
+      if (isGantt && line.includes(':')) {
+        // Heuristic: The last colon is the separator if what follows looks like metadata
+        // Metadata starts with: after, \d{4}-, \d+(d|h|m|s), active, done, crit, milestone
+        const lastColon = line.lastIndexOf(':');
+        if (lastColon > 0) {
+          const pre = line.slice(0, lastColon);
+          const post = line.slice(lastColon + 1);
+          // Check if post looks like metadata
+          if (/^\s*(after\s|[\d]{4}-|\d+(d|h|m|s)|active|done|crit|milestone|[a-zA-Z0-9]+,)/.test(post)) {
+            // It is likely a separator. Replace colons in 'pre' with full-width colon
+            const fixedPre = pre.replace(/:/g, '：');
+            lines[i] = fixedPre + ':' + post;
+          }
+          // If post doesn't look like metadata, maybe the colon is just part of the title and there is NO metadata?
+          // But Mermaid Gantt usually requires : to define metadata or at least to separate checking?
+          // Actually, "Task Name" without colon is valid if no metadata?
+          // If the line is "Task Name : ", then post is empty/whitespace.
+          // Ideally we only touch lines that actually cause issues.
+        }
+      }
+    }
+    src = lines.join('\n');
+
+    // Flowchart: normalize raw double-quotes inside square-bracket labels
+    if (/^\s*(flowchart|graph)\b/im.test(src)) {
+      src = src.replace(/([A-Za-z0-9_]+)\[(?!\[)((?:[^"\]]|"[^"]*")*)]/g, function (_, id, label) {
+        let t = String(label == null ? "" : label).trim();
+        if (!t) return id + '[""]';
+        if (/^".*"$/.test(t)) {
+          let inner = t.slice(1, -1);
+          inner = inner.replace(/\\"+/g, "'").replace(/"/g, "'");
+          inner = inner.replace(/'{2,}/g, "'");
+          return id + '["' + inner + '"]';
+        }
+        return id + '["' + t.replace(/\\"+/g, "'").replace(/"/g, "'") + '"]';
+      });
+    }
+
+    // Additional repair for ER diagrams: Attribute names must be ASCII
+    // Pattern:
+    // erDiagram
+    //   ENTITY "Name" {
+    //     type attributeName "comment"
+    //     ...
+    //   }
+    if (/^\s*erDiagram/m.test(src)) {
+      let attrCounter = 1;
+      const erLines = src.split('\n');
+      let inBlock = false;
+      for (let i = 0; i < erLines.length; i++) {
+        const line = erLines[i];
+        if (line.includes('{')) inBlock = true;
+        if (line.includes('}')) inBlock = false;
+
+        if (inBlock && !line.includes('{') && !line.includes('}')) {
+          // Expecting: type attributeName [PK|FK] ["comment"]
+          // We want to target 'attributeName' if it has non-ASCII
+          // Regex: space + type + space + attributeName + ...
+          const match = line.match(/^\s*([a-zA-Z0-9_]+)\s+([^\s]+)(.*)$/);
+          if (match) {
+            const type = match[1];
+            const name = match[2];
+            const rest = match[3]; // includes remaining spaces, keys, comments
+
+            // Check if name has non-ASCII
+            if (/[^\x00-\x7F]/.test(name)) {
+              const newName = "attr_" + (attrCounter++);
+              // If 'rest' already has a comment string, use that? 
+              // Or if not, use original name as comment?
+              // The user's error showed: string カテゴリ "カテゴリ" -> name is カテゴリ, rest is " "カテゴリ"
+
+              // If rest contains a quoted string, we might keep it.
+              // But if the name itself was Japanese, we should probably output: type attr_N "OriginalName"
+
+              // Let's allow existing comments to stay if they exist, but if not, verify.
+              // Actually, easiest is: replace name with newName. 
+              // If 'rest' does NOT have a comment, append "OriginalName".
+              // If 'rest' HAS a comment, we keep it.
+
+              let newLine = line.replace(name, newName);
+              if (!/"[^"]*"/.test(rest) && !/'[^']*'/.test(rest)) {
+                newLine += ' "' + name + '"';
+              }
+              erLines[i] = newLine;
+            }
+          }
+        }
+      }
+      src = erLines.join('\n');
+    }
+
+    // Additional repair for gitGraph:
+    // branch Name -> branch "Name" (if not already quoted)
+    // checkout Name -> checkout "Name"
+    // merge Name -> merge "Name"
+    // Additional repair for gitGraph:
+    // Remove direction specifiers like "TD", "TB", "LR" which are invalid for gitGraph in some versions
+    if (/^\s*gitGraph/m.test(src)) {
+      src = src.replace(/^(\s*gitGraph)\s+(TD|TB|BT|LR|RL)\b/im, '$1');
+
+      const gitLines = src.split('\n');
+
+      for (let i = 0; i < gitLines.length; i++) {
+        let line = gitLines[i];
+        if (/^\s*(branch|checkout|merge)\s/.test(line)) {
+          line = line.replace(/^(\s*(?:branch|checkout|merge))\s+([^":\n\r]+?)(\s*)$/i, function (m, cmd, name, suffix) {
+            const trimmed = name.trim();
+            if (trimmed.startsWith('"') && trimmed.endsWith('"')) return m;
+            if (trimmed.startsWith("'") && trimmed.endsWith("'")) return m;
+            const escaped = trimmed.replace(/"/g, '\\"');
+            return `${cmd} "${escaped}"${suffix}`;
+          });
+          gitLines[i] = line;
+        }
+      }
+      src = gitLines.join('\n');
+    }
+
+    // Additional repair for journey:
+    if (/^\s*journey/m.test(src)) {
+      const jLines = src.split('\n');
+      for (let i = 0; i < jLines.length; i++) {
+        let line = jLines[i].trim();
+        if (!line || /^(journey|title|section)\b/i.test(line)) continue;
+        const parts = line.split(':');
+        if (parts.length > 3) {
+          const status = parts.pop().trim();
+          const score = parts.pop().trim();
+          const taskName = parts.join(' ').trim();
+          jLines[i] = `      ${taskName} : ${score} : ${status}`;
+        }
+      }
+      src = jLines.join('\n');
+    }
+
+    // Additional repair for C4Context:
+    if (/^\s*(C4Context|C4Container|C4Component)/m.test(src)) {
+      const c4Lines = src.split('\n');
+      for (let i = 0; i < c4Lines.length; i++) {
+        // Comment out "note" or "Note(" lines as they cause lexical errors in C4
+        if (/^\s*Note\s*(?:\(|\b(?:left|right|over)\b)/i.test(c4Lines[i])) {
+          c4Lines[i] = "%% " + c4Lines[i];
+        }
+      }
+      src = c4Lines.join('\n');
+    }
+
+    return src;
   }
 
   function iconForNodeLabel(label, id) {
@@ -3042,8 +3790,8 @@
       langSetting === "ja" || langSetting === "en"
         ? langSetting
         : uiLang === "en"
-        ? "en"
-        : "ja";
+          ? "en"
+          : "ja";
     const styleId = String(opts.styleId || "business");
     const style = IMAGE_STYLE_MODULES[styleId] || IMAGE_STYLE_MODULES.business;
     const slideTitle = deriveSlideTitle(code, userDescription);
@@ -3099,8 +3847,7 @@
       `REFERENCE (Mermaid code for understanding only; do NOT render this text verbatim): """\n${mermaidForPrompt}\n"""`,
       `DIAGRAM FIDELITY (highest priority): The Mermaid code is the blueprint. Render a clean diagram/infographic that matches the Mermaid structure exactly: include every node and every edge; preserve branches/merges; preserve subgraph groupings as separate containers with titles; follow the declared direction (${dirText}).`,
       `TEXT FIDELITY: Copy node labels, decision labels, and subgraph titles from the Mermaid code VERBATIM. Do not translate, do not paraphrase, do not summarize Mermaid labels. Do not invent any new labels that are not present in the Mermaid or the user intent.`,
-      `Text rendering: render readable labels for nodes, decisions, and subgraph titles. Use ${
-        lang === "ja" ? "Japanese" : "English"
+      `Text rendering: render readable labels for nodes, decisions, and subgraph titles. Use ${lang === "ja" ? "Japanese" : "English"
       } as the primary language.`,
       `MANGA STYLE ADAPTER (important): Apply manga ink aesthetics to the diagram (linework, screentone shading, panel borders), but keep it strictly a diagram. No characters, no narrative scenes, no product photos, no cinematic perspective. Speech bubbles may be used ONLY for the header title; all other text must be inside simple diagram boxes.`,
       `Slide layout: wide 16:9. Use a clean slide composition: (1) a prominent header title '${slideTitle}', (2) a central diagram area that follows the Mermaid structure, and (3) optional side panels with short bullet points summarizing only topic facts from the user intent (e.g., 概要 / 要点). Do not add facts not present in the Mermaid or user intent. Do NOT use headings like "INPUT DESCRIPTION" or "SUMMARY".`,
@@ -3120,43 +3867,83 @@
   let lastExternalOpenUrl = "";
   function openInNewTab(url) {
     const u = String(url || "");
+    if (!u) return false;
     const now = Date.now();
-    if (u && lastExternalOpenUrl === u && now - lastExternalOpenAt < 1500)
-      return;
+    if (u && lastExternalOpenUrl === u && now - lastExternalOpenAt < 2000)
+      return true;
     lastExternalOpenAt = now;
     lastExternalOpenUrl = u;
 
-    const ua =
-      navigator && navigator.userAgent ? String(navigator.userAgent) : "";
-    const isAndroid = /Android/i.test(ua);
+    // 0) Apps Script host API (if available in this container).
+    try {
+      if (
+        window.google &&
+        google.script &&
+        google.script.host &&
+        typeof google.script.host.openLink === "function"
+      ) {
+        google.script.host.openLink(u);
+        return true;
+      }
+    } catch (_) { }
 
-    // 1) Try window.open first (some Android WebViews ignore programmatic <a>.click()).
+    // 1) Try native popup first (works in normal browsers if user activation is preserved).
     try {
       const w = window.open(u, "_blank", "noopener,noreferrer");
-      if (w) {
-        try {
-          w.opener = null;
-        } catch (_) {}
-        return;
-      }
-    } catch (_) {}
+      if (w) return true;
+    } catch (_) { }
 
-    // 2) Fallback: synthetic anchor click.
+    // 2) Best effort: synthetic link click to _blank.
+    // Note: this method has no reliable success signal on mobile browsers.
     try {
-      const a = document.createElement("a");
-      a.href = u;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      if (!isAndroid) return;
-    } catch (_) {}
+      const aBlank = document.createElement("a");
+      aBlank.href = u;
+      aBlank.target = "_blank";
+      aBlank.rel = "noopener noreferrer";
+      document.body.appendChild(aBlank);
+      aBlank.click();
+      window.setTimeout(() => aBlank.remove(), 80);
+    } catch (_) { }
 
-    // 3) Last resort (Android): same-tab navigation if popups/new tabs are blocked.
+    // 3) Best effort: ask browser to navigate top frame via anchor.
+    // This avoids popup blockers on Android Chrome + Apps Script iframe environments.
+    try {
+      const aTop = document.createElement("a");
+      aTop.href = u;
+      aTop.target = "_top";
+      aTop.rel = "noopener noreferrer";
+      document.body.appendChild(aTop);
+      aTop.click();
+      window.setTimeout(() => aTop.remove(), 80);
+    } catch (_) { }
+
+    // 4) Final fallback to direct location assignment.
+    try {
+      if (window.top && window.top.location) {
+        window.top.location.assign(u);
+        return true;
+      }
+    } catch (_) { }
     try {
       window.location.assign(u);
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function openGeminiAppWithFallbackNotice() {
+    const url = "https://gemini.google.com/app";
+    const opened = openInNewTab(url);
+    if (opened) return;
+    try {
+      await copyTextToClipboard(url);
+    } catch (_) { }
+    showToast(
+      "info",
+      "Geminiを自動で開けませんでした。URLはコピー済みです。ブラウザに貼り付けて開いてください。",
+      { timeoutMs: 4200 }
+    );
   }
 
   let geminiImagePromptBusy = false;
@@ -3181,9 +3968,8 @@
       await copyTextToClipboard(prompt);
       showToast("success", t("geminiImageCopied"));
 
-      confirmAsyncWithOkAction(t("geminiOpenConfirm"), "Gemini", () => {
-        openInNewTab("https://gemini.google.com/app");
-        // IMPORTANT: avoid same-tab navigation (embedded contexts may reject).
+      await confirmAsyncWithOkAction(t("geminiOpenConfirm"), "Gemini", () => {
+        openGeminiAppWithFallbackNotice();
       });
     } catch (e) {
       showToast(
@@ -3307,14 +4093,14 @@
           clone.setAttribute(
             "viewBox",
             String(bbox.x) +
-              " " +
-              String(bbox.y) +
-              " " +
-              String(bbox.width) +
-              " " +
-              String(bbox.height)
+            " " +
+            String(bbox.y) +
+            " " +
+            String(bbox.width) +
+            " " +
+            String(bbox.height)
           );
-      } catch (_) {}
+      } catch (_) { }
     }
     if (!(width > 0 && height > 0)) {
       width = 1200;
@@ -3495,7 +4281,6 @@
     const statusText = document.getElementById("historyStatusText");
     const overlay = document.getElementById("historyOverlay");
     const overlayText = document.getElementById("historyOverlayText");
-    const refreshBtn = document.getElementById("refreshHistoryBtn");
     const clearBtn = document.getElementById("clearHistoryBtn");
     const loadMoreBtn = document.getElementById("historyLoadMoreBtn");
 
@@ -3510,10 +4295,8 @@
     if (overlayText)
       overlayText.textContent = busy ? t(messageKey || "historyUpdating") : "";
 
-    if (refreshBtn) refreshBtn.disabled = !!busy;
     if (clearBtn) clearBtn.disabled = !!busy;
     if (loadMoreBtn) loadMoreBtn.disabled = !!busy;
-    if (refreshBtn) refreshBtn.classList.toggle("opacity-50", !!busy);
     if (clearBtn) clearBtn.classList.toggle("opacity-50", !!busy);
     if (loadMoreBtn) loadMoreBtn.classList.toggle("opacity-50", !!busy);
   }
@@ -3561,101 +4344,132 @@
     btn.disabled = !!disabled;
     btn.classList.toggle("opacity-50", !!disabled);
   }
+  // --- API Key Management (Local Storage) ---
+  const API_KEY_STORAGE_KEY = "diagram.userApiKey";
+
+  function getApiKey() {
+    return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
+  }
+
+  function saveApiKey() {
+    const input = document.getElementById("apiKeyInput");
+    if (!input) return;
+    const key = input.value.trim();
+    if (!key) {
+      showToast("error", "APIキーを入力してください");
+      return;
+    }
+    localStorage.setItem(API_KEY_STORAGE_KEY, key);
+    input.value = "";
+    updateApiKeyStatusUI();
+    showToast("success", "APIキーを保存しました（ブラウザに保存）");
+  }
+
+  function clearApiKey() {
+    localStorage.removeItem(API_KEY_STORAGE_KEY);
+    const input = document.getElementById("apiKeyInput");
+    if (input) input.value = "";
+    updateApiKeyStatusUI();
+    showToast("info", "APIキーを削除しました");
+  }
+
+  function updateApiKeyStatusUI() {
+    const key = getApiKey();
+    const icon = document.getElementById("apiKeyStatusIcon");
+    const text = document.getElementById("apiKeyStatusText");
+    const input = document.getElementById("apiKeyInput");
+
+    if (icon && text) {
+      if (key) {
+        icon.textContent = "lock";
+        icon.className = "material-symbols-outlined text-sm text-green-400";
+        text.textContent = "個人のAPIキーを使用中";
+        text.className = "text-green-400 font-bold";
+      } else {
+        icon.textContent = "cloud";
+        icon.className = "material-symbols-outlined text-sm text-amber-400";
+        text.textContent = "共有キー（無料枠）を使用中";
+        text.className = "ui-muted font-medium";
+      }
+    }
+    if (input) {
+      input.placeholder = key ? "（設定済み）" : "AIza...";
+    }
+  }
+
+  // --- History Management (Local Storage) ---
+  const HISTORY_STORAGE_KEY = "diagram.history.items";
+  const HISTORY_LIMIT = 30;
+
   function saveHistoryManual() {
     applyEditsToMermaidCode({ rerender: false });
     pendingHistorySave = false;
     saveHistory({ reason: "manual" });
   }
 
+  function getHistoryItemsLocal() {
+    try {
+      const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+  }
+
   function saveHistory(meta = {}) {
     const prompt = document.getElementById("userInput").value || "";
     const code = document.getElementById("mermaidCode").value || "";
-    if (!code.trim()) {
+    // Allow saving if there is an error, even if code is empty (e.g. API failure)
+    if (!code.trim() && !(meta && meta.error)) {
       showToast("info", "保存するMermaidコードがありません");
       return;
     }
 
-    const entry = {
-      prompt,
-      code,
+    const items = getHistoryItemsLocal();
+    const newItem = {
+      id: "loc_" + Date.now() + "_" + Math.random().toString(36).substring(2, 5),
+      createdAt: Date.now(),
+      prompt: prompt.slice(0, 2000),
+      code: code.slice(0, 8000),
       diagramType: document.getElementById("diagramTypeSelect").value,
-      model: document.getElementById("modelSelect").value,
+      model: "flash-lite",
       theme: getDiagramTheme(),
-      fileName:
-        currentFile && currentFile.filename ? currentFile.filename : null,
+      fileName: currentFile && currentFile.filename ? currentFile.filename : null,
       meta,
     };
 
-    google.script.run
-      .withSuccessHandler(() => refreshHistory())
-      .withFailureHandler((e) =>
-        showToast("error", "履歴の保存に失敗しました: " + e.message)
-      )
-      .saveDiagramHistory(entry);
+    items.unshift(newItem);
+    if (items.length > HISTORY_LIMIT) {
+      items.length = HISTORY_LIMIT;
+    }
+
+    try {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items));
+      refreshHistory();
+    } catch (e) {
+      showToast("error", "履歴保存エラー: 容量オーバーの可能性があります");
+    }
   }
 
   function refreshHistory() {
-    const end = beginHistoryOp("historyUpdating");
-    historyNextOffset = 0;
-    historyHasMore = false;
+    const items = getHistoryItemsLocal();
+    renderHistoryList(items);
     setHistoryLoadMoreVisible(false);
-    setHistoryLoadMoreDisabled(true);
-    renderHistorySkeleton();
-    google.script.run
-      .withSuccessHandler((res) => {
-        const items = res && res.items ? res.items : [];
-        renderHistoryList(items || []);
-        historyNextOffset =
-          (res && Number.isFinite(res.offset) ? res.offset : 0) + items.length;
-        historyHasMore = !!(res && res.hasMore);
-        setHistoryLoadMoreVisible(historyHasMore);
-        setHistoryLoadMoreDisabled(false);
-        end();
-      })
-      .withFailureHandler((e) => {
-        console.error("History load failed:", e);
-        end();
-      })
-      .listDiagramHistoryPage(HISTORY_PAGE_SIZE, 0);
   }
 
   function loadMoreHistory() {
-    if (!historyHasMore) return;
-    const end = beginHistoryOp("historyUpdating");
-    setHistoryLoadMoreDisabled(true);
-    google.script.run
-      .withSuccessHandler((res) => {
-        const items = res && res.items ? res.items : [];
-        appendHistoryList(items || []);
-        historyNextOffset =
-          (res && Number.isFinite(res.offset)
-            ? res.offset
-            : historyNextOffset) + items.length;
-        historyHasMore = !!(res && res.hasMore);
-        setHistoryLoadMoreVisible(historyHasMore);
-        setHistoryLoadMoreDisabled(false);
-        end();
-      })
-      .withFailureHandler((e) => {
-        end();
-        setHistoryLoadMoreDisabled(false);
-        showToast(
-          "error",
-          "履歴の読み込みに失敗しました: " +
-            (e && e.message ? e.message : String(e))
-        );
-      })
-      .listDiagramHistoryPage(HISTORY_PAGE_SIZE, historyNextOffset);
+    // No-op for local
   }
 
   function renderHistoryList(items) {
     const list = document.getElementById("historyList");
+    if (!list) return;
     list.innerHTML = "";
 
     if (!items.length) {
+      const msg = typeof t === "function" ? t("historyEmpty") : "No history";
       list.innerHTML =
         '<div class="text-sm ui-muted border ui-border rounded-lg p-3">' +
-        escapeHtml(t("historyEmpty")) +
+        escapeHtml(msg) +
         "</div>";
       return;
     }
@@ -3674,19 +4488,27 @@
           .toString()
           .trim()
           .slice(0, 40) || "diagram";
-      const subtitle = [item.diagramType, item.model, item.theme]
+      const subtitle = [item.diagramType, item.theme]
         .filter(Boolean)
         .join(" / ");
 
+      const isError = item.meta && item.meta.error;
       const row = document.createElement("div");
       row.className =
-        "glass-panel rounded-xl p-3 flex items-start justify-between gap-3";
+        "glass-panel rounded-xl p-3 flex items-start justify-between gap-3" +
+        (isError ? " ring-1 ring-red-500/30 bg-red-500/5" : "");
       row.dataset.historyId = String(item.id);
+
+      const errorIcon = isError
+        ? '<span class="material-symbols-outlined text-red-500 text-sm align-middle mr-1">error</span>'
+        : "";
+
       row.innerHTML =
-        '<button class="text-left flex-1 min-w-0 hover:opacity-90 transition" title="' +
-        escapeHtml(t("historyRestoreTitle")) +
+        '<button class="text-left flex-1 min-w-0 hover:opacity-90 transition" title="Restore">' +
+        '<div class="text-sm font-semibold ui-text truncate ' +
+        (isError ? "text-red-500" : "") +
         '">' +
-        '<div class="text-sm font-semibold ui-text truncate">' +
+        errorIcon +
         escapeHtml(title) +
         "</div>" +
         '<div class="text-xs ui-muted truncate">' +
@@ -3697,16 +4519,32 @@
         "</div>" +
         "</button>" +
         '<div class="flex items-center gap-1 flex-none">' +
-        '<span class="mini-spinner hidden" data-history-spinner></span>' +
-        '<button class="ui-muted canvas-control transition p-2 rounded-lg" title="' +
-        escapeHtml(t("historyDeleteTitle")) +
-        '">' +
+        (isError
+          ? '<button class="ui-muted canvas-control transition p-2 rounded-lg text-red-400 hover:text-red-500 hover:bg-red-500/10" title="' +
+          escapeHtml(t("copyErrorLog")) +
+          '"><span class="material-symbols-outlined text-lg">bug_report</span></button>'
+          : "") +
+        '<button class="ui-muted canvas-control transition p-2 rounded-lg" title="Delete">' +
         '<span class="material-symbols-outlined text-lg">delete</span>' +
         "</button>" +
         "</div>";
 
-      const [loadBtn, deleteBtn] = row.querySelectorAll("button");
+      const btns = row.querySelectorAll("button");
+      // 0: Restore, 1: CopyLog (if error) or Delete, 2: Delete (if error)
+      const loadBtn = btns[0];
+      let copyBtn = null;
+      let deleteBtn = null;
+
+      if (isError) {
+        copyBtn = btns[1];
+        deleteBtn = btns[2];
+      } else {
+        deleteBtn = btns[1];
+      }
+
       loadBtn.addEventListener("click", () => loadHistory(item.id));
+      if (copyBtn)
+        copyBtn.addEventListener("click", (e) => copyErrorLog(e, item.id));
       deleteBtn.addEventListener("click", () => deleteHistory(item.id));
 
       list.appendChild(row);
@@ -3714,70 +4552,88 @@
   }
 
   function loadHistory(id) {
-    const end = beginHistoryOp("historyLoading", id);
-    google.script.run
-      .withSuccessHandler((item) => {
-        if (!item) {
-          end();
-          return;
-        }
-        document.getElementById("userInput").value = item.prompt || "";
-        document.getElementById("mermaidCode").value = item.code || "";
-        syncFlowOnlyControls(item.code || "");
-        const diagTypeEl = document.getElementById("diagramTypeSelect");
-        if (item.diagramType && diagTypeEl)
-          diagTypeEl.value = item.diagramType;
-        const modelEl = document.getElementById("modelSelect");
-        if (item.model && modelEl)
-          modelEl.value = item.model;
-        if (item.theme)
-          localStorage.setItem(
-            DIAGRAM_THEME_KEY,
-            normalizeDiagramTheme(item.theme)
-          );
-        pendingHistorySave = false;
-        changeTheme();
-        end();
-      })
-      .withFailureHandler((e) => {
-        end();
-        showToast("error", "履歴の読み込みに失敗しました: " + e.message);
-      })
-      .getDiagramHistoryItem(id);
+    const items = getHistoryItemsLocal();
+    const item = items.find(x => x.id === id);
+    if (!item) {
+      showToast("error", "履歴が見つかりません");
+      return;
+    }
+
+    document.getElementById("userInput").value = item.prompt || "";
+    document.getElementById("mermaidCode").value = item.code || "";
+    syncFlowOnlyControls(item.code || "");
+
+    const diagTypeEl = document.getElementById("diagramTypeSelect");
+    if (item.diagramType && diagTypeEl) diagTypeEl.value = item.diagramType;
+
+    if (item.theme) {
+      localStorage.setItem(DIAGRAM_THEME_KEY, normalizeDiagramTheme(item.theme));
+    }
+
+    pendingHistorySave = false;
+    changeTheme();
+    togglePanel(false);
   }
 
   function deleteHistory(id) {
-    const end = beginHistoryOp("historyDeleting", id);
-    google.script.run
-      .withSuccessHandler(() => {
-        refreshHistory();
-        end();
-      })
-      .withFailureHandler((e) => {
-        end();
-        showToast("error", "履歴の削除に失敗しました: " + e.message);
-      })
-      .deleteDiagramHistory(id);
+    if (typeof confirmAsync === "function") {
+      confirmAsync("この履歴を削除しますか？", "削除確認").then(ok => {
+        if (!ok) return;
+        _doDelete(id);
+      });
+    } else {
+      if (confirm("この履歴を削除しますか？")) _doDelete(id);
+    }
+  }
+
+  function _doDelete(id) {
+    const items = getHistoryItemsLocal();
+    const next = items.filter(x => x.id !== id);
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
+    refreshHistory();
   }
 
   function clearHistory() {
-    confirmAsync(t("historyClearConfirm"), t("historyClearTitle")).then(
-      (ok) => {
+    if (typeof confirmAsync === "function") {
+      confirmAsync("履歴をすべて削除しますか？", "全削除確認").then(ok => {
         if (!ok) return;
-        const end = beginHistoryOp("historyClearing");
-        renderHistorySkeleton();
-        google.script.run
-          .withSuccessHandler(() => {
-            refreshHistory();
-            end();
-          })
-          .withFailureHandler((e) => {
-            end();
-            showToast("error", "履歴の全削除に失敗しました: " + e.message);
-          })
-          .clearDiagramHistory();
-      }
-    );
+        _doClear();
+      });
+    } else {
+      if (confirm("履歴をすべて削除しますか？")) _doClear();
+    }
+  }
+
+  function _doClear() {
+    localStorage.removeItem(HISTORY_STORAGE_KEY);
+    refreshHistory();
+    showToast("info", "履歴を全削除しました");
+  }
+
+  async function copyErrorLog(e, id) {
+    if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+    const items = getHistoryItemsLocal();
+    const item = items.find((x) => x.id === id);
+    if (!item) {
+      showToast("error", "履歴が見つかりません");
+      return;
+    }
+    const logObj = {
+      timestamp: new Date(item.createdAt).toISOString(),
+      id: item.id,
+      error: item.meta ? item.meta.error : "Unknown error",
+      prompt: item.prompt,
+      param_model: item.model,
+      param_type: item.diagramType,
+      param_theme: item.theme,
+      code: item.code,
+    };
+    try {
+      await copyTextToClipboard(JSON.stringify(logObj, null, 2));
+      showToast("success", t("errorLogCopied"));
+    } catch (err) {
+      showToast("error", "Copy failed: " + err);
+    }
   }
 
   function escapeHtml(str) {
@@ -3856,19 +4712,35 @@
   }
 
   function findFlowchartNodeDeclaration(code, id, openTokens) {
-    var re = /(^|[^A-Za-z0-9_])/g;
-    var m;
-    while ((m = re.exec(code))) {
-      var start = re.lastIndex;
-      if (code.indexOf(id, start) !== start) continue;
-      var afterId0 = start + id.length;
-      var rest = code.slice(afterId0);
+    var src = String(code || "");
+    var needle = String(id || "");
+    if (!needle) return null;
+
+    function isWordChar(ch) {
+      return !!ch && /[A-Za-z0-9_]/.test(ch);
+    }
+
+    var pos = 0;
+    while (true) {
+      var start = src.indexOf(needle, pos);
+      if (start < 0) break;
+
+      var prev = start > 0 ? src.charAt(start - 1) : "";
+      var next = src.charAt(start + needle.length);
+      pos = start + needle.length;
+
+      // Match whole identifier only.
+      if (isWordChar(prev) || isWordChar(next)) continue;
+
+      var afterId0 = start + needle.length;
+      var rest = src.slice(afterId0);
       var m2 = /^\s*/.exec(rest);
       var ws = m2 ? m2[0].length : 0;
       var afterId = afterId0 + ws;
+
       var ok = false;
       for (var i = 0; i < openTokens.length; i++) {
-        if (code.indexOf(openTokens[i], afterId) === afterId) {
+        if (src.indexOf(openTokens[i], afterId) === afterId) {
           ok = true;
           break;
         }

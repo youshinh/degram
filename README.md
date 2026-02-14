@@ -14,35 +14,73 @@ De:gramは、AI (Gemini) を活用してテキストや画像からMermaid.js形
 - **履歴管理**: 過去に生成したダイアグラムを履歴として保存（ブラウザのローカルストレージおよびGoogleユーザプロパティを利用）。
 - **マルチ言語対応**: UIおよびAIの出力（ラベル等）を日本語・英語で切り替え可能。
 
+## 対応ダイアグラム
+
+以下のMermaid図解タイプに対応しています（AIが自動判別、または手動指定可能）：
+
+- Flowchart (フローチャート)
+- Sequence Diagram (シーケンス図)
+- State Diagram (ステートマシン図)
+- ER Diagram (ER図)
+- Gantt Chart (ガントチャート)
+- Journey Map (カスタマージャーニーマップ)
+- GitGraph (Gitグラフ)
+- Pie Chart (円グラフ)
+- Mindmap (マインドマップ)
+- Timeline (タイムライン)
+- Class Diagram (クラス図)
+- C4 Model (Context, Container, Component, Dynamic, Deployment)
+
+## 画像生成スタイル
+
+AIによる画像エクスポート機能では、以下のスタイルを選択可能です：
+
+- **スタンダード・ビジネス**: プロフェッショナルなフラットデザイン
+- **日本の漫画・劇画風**: モノクロ、スクリーントーン、集中線
+- **手書きホワイトボード**: ラフなマーカー風、手書きフォント
+- **クレイモーフィズム (3D)**: 粘土のような柔らかい3D表現
+- **サイバーパンク**: ネオンカラー、ダークモード
+- **ミニマル・モノクロ**: 究極にシンプルな線画
+- **アイソメトリック (2.5D)**: 斜め上からの俯瞰図
+- **設計図・青写真**: 方眼紙に青焼き風
+- **切り絵・ペーパークラフト**: 紙を重ねたような質感
+
 ## インストール・セットアップ方法
 
 このプロジェクトは Google Apps Script (clasp を使用) で構成されています。
 
 ### 必要なもの
+
 - Google アカウント
 - Node.js & npm (clasp 用)
 - Gemini API キー ([Google AI Studio](https://aistudio.google.com/) で取得可能)
 
 ### セットアップ手順
+
 1. **リポジトリのクローン**:
+
    ```bash
-   git clone https://github.com/YOUR_USERNAME/degram.git
+   git clone https://github.com/youshinh/degram.git
    cd degram
    ```
 
 2. **clasp のインストールとログイン**:
+
    ```bash
    npm install -g @google/clasp
    clasp login
    ```
 
 3. **新規 GAS プロジェクトの作成、または紐付け**:
+
    ```bash
    clasp create --title "De:gram" --type webapp
    ```
+
    (既存の `.clasp.json` を使用する場合は、`scriptId` を自身のプロジェクトのものに書き換えてください)
 
 4. **コードのプッシュ**:
+
    ```bash
    clasp push
    ```
@@ -57,6 +95,7 @@ De:gramは、AI (Gemini) を活用してテキストや画像からMermaid.js形
    - 発行された URL にアクセスして利用を開始します。
 
 ## 使い方
+
 1. 左側の入力欄に、作成したい図の内容を日本語または英語で入力します。
 2. 必要に応じて画像ファイルを添付します。
 3. 「Generate」ボタンを押すと、AIがダイアグラムを生成します。
@@ -65,18 +104,23 @@ De:gramは、AI (Gemini) を活用してテキストや画像からMermaid.js形
 ## 生成例 (Generation Example)
 
 ### プロンプト入力と画像添付
+
 ![Prompt Example](./img/gen_prompt.png)
 
 ### 生成されたダイアグラム
+
 ![Output Example](./img/gen_output.png)
 
 ## 技術スタック
+
 - **Frontend**: HTML5, Vanilla JavaScript, Tailwind CSS, Polyfill (Lucide Icons, Mermaid.js)
 - **Backend**: Google Apps Script
-- **AI Engine**: Google Gemini API (Vertex AI / Generative Language API)
+- **AI Engine**: Google Gemini API (gemini-flash-lite-latest)
 
 ## ライセンス
+
 このプロジェクトは [MIT License](LICENSE) の下で公開されています。
 
 ## 免責事項
+
 このアプリケーションは AI を使用してコードを生成するため、常に正確な図解が保証されるわけではありません。不正確な出力が含まれる可能性があることを理解して使用してください。

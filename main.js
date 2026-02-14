@@ -1,15 +1,8 @@
 /**
- * 設定: APIキーはスクリプトプロパティから取得
- * キー名: GEMINI_API_KEY
+ * 設定: APIキーはスクリプトプロパティから取得（デフォルト共有キー）
+ * ユーザーが個人キーを設定している場合はそちらを優先
  */
 const SCRIPT_PROP_KEY = 'GEMINI_API_KEY';
-
-// --- Diagram History (User Properties) ---
-const DIAGRAM_HISTORY_INDEX_KEY = 'DIAGRAM_HISTORY_INDEX_V1';
-const DIAGRAM_HISTORY_ITEM_PREFIX = 'DIAGRAM_HISTORY_ITEM_V1_';
-const DIAGRAM_HISTORY_MAX_ENTRIES = 30;
-const DIAGRAM_HISTORY_MAX_CODE_CHARS = 8000;
-const DIAGRAM_HISTORY_MAX_PROMPT_CHARS = 2000;
 
 function include(filename) {
     return HtmlService.createHtmlOutputFromFile(filename).getContent();
@@ -24,18 +17,32 @@ function doGet() {
 
 /**
  * Gemini APIを呼び出してMermaidコードを生成する関数
+ * @param {string} userPrompt
+ * @param {string} modelVersion - 'flash-lite' or 'flash'
+ * @param {string} diagramType
+ * @param {object} fileData
+ * @param {string} currentCode - リカバリーモード用（廃止方向だが互換性維持）
+ * @param {string} errorMessage - リカバリーモード用
+ * @param {string} retryHistoryJson
+ * @param {string} uiLang
+ * @param {string} customApiKey - ユーザー個人のAPIキー（空ならスクリプトプロパティを使用）
+ * @param {number} temperatureOverride - リトライ時のtemperature上書き
  */
-function callGeminiAPI(userPrompt, modelVersion, diagramType = 'auto', fileData = null, currentCode = null, errorMessage = null, retryHistoryJson = null, uiLang = null) {
-    const apiKey = PropertiesService.getScriptProperties().getProperty(SCRIPT_PROP_KEY);
+function callGeminiAPI(userPrompt, modelVersion, diagramType, fileData, currentCode, errorMessage, retryHistoryJson, uiLang, customApiKey, temperatureOverride) {
+    // --- APIキー取得: 個人キー優先 → スクリプトプロパティ ---
+    const userKey = customApiKey || null;
+    const scriptKey = PropertiesService.getScriptProperties().getProperty(SCRIPT_PROP_KEY);
+    const apiKey = userKey || scriptKey;
+    const usingPersonalKey = !!userKey;
+
     if (!apiKey) {
-        throw new Error('API Keyが設定されていません。スクリプトプロパティに GEMINI_API_KEY を設定してください。');
+        throw new Error('API Keyが設定されていません。管理者にお問い合わせください。');
     }
 
     // モデルのマッピング
     const modelMap = {
         'flash': 'gemini-flash-latest',
-        'flash-lite': 'gemini-flash-lite-latest',
-        'pro': 'gemini-pro-latest'
+        'flash-lite': 'gemini-flash-lite-latest'
     };
     const model = modelMap[modelVersion] || 'gemini-flash-lite-latest';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -53,7 +60,15 @@ function callGeminiAPI(userPrompt, modelVersion, diagramType = 'auto', fileData 
     } else if (type === 'statediagram-v2') {
         extraExamples = `\n# ADDITIONAL STATE RULES\n- Use \`[*] --> State\`.`;
     } else if (type === 'erdiagram') {
-        extraExamples = `\n# ADDITIONAL ER RULES\n- ENTITY { type name }`;
+        extraExamples = `\n# ADDITIONAL ER RULES\n- ENTITY { type attributeName "Comment(Japanese)" }\n- Attribute names MUST be ASCII (e.g. string category "カテゴリ"). Do NOT use Japanese for attribute variable names.`;
+    } else if (type === 'gantt') {
+        extraExamples = `\n# ADDITIONAL GANTT RULES\n- **NEVER** use colons (:) in task titles. Use full-width colon (：) or hyphen (-) instead.\n- Syntax: \`Task Name : [crit,] [active,] [after id,] [duration]\``;
+    } else if (type === 'gitGraph') {
+        extraExamples = `\n# ADDITIONAL GITGRAPH RULES\n- **NEVER** use direction specifiers like \`TD\`, \`LR\`, etc. with \`gitGraph\`. Syntax is just \`gitGraph\`. \n- Branch names MUST be double-quoted if they contain non-ASCII characters. Example: \`branch "開発"\`\n- Use \`checkout\` after creating a branch if you intend to commit to it immediately.`;
+    } else if (type === 'journey') {
+        extraExamples = `\n# ADDITIONAL JOURNEY RULES\n- Syntax: \`Task name : Score : Person1, Person2\` or \`Task name : Score : Status\`\n- **NEVER** use more than two colons per task line. If you need to add details, include them in the Task name or comma-separated list.\n- Example: \`DB cleanup : 5 : done\` (CORRECT), \`DB: cleanup: 5: done\` (INCORRECT - too many colons)`;
+    } else if (type.startsWith('c4')) {
+        extraExamples = `\n# ADDITIONAL C4 RULES\n- **NEVER** use \`Note(...)\` or \`note\` statements. They cause lexical errors in this version.\n- Use standard C4 syntax: \`Person(alias, "Label")\`, \`System(alias, "Label")\`, \`Rel(from, to, "Label")\`.`;
     }
 
     if (extraExamples) {
@@ -73,44 +88,31 @@ function callGeminiAPI(userPrompt, modelVersion, diagramType = 'auto', fileData 
             : `\n\n# OUTPUT LANGUAGE\n- Output labels/text in the same language as the user's request.\n- Keep proper nouns / product names / technical terms as-is.\n- Do NOT translate diagram keywords (flowchart, sequenceDiagram, etc.).`;
 
     let promptContent = "";
-    if (errorMessage && currentCode) {
-        let retryHistoryText = "";
-        if (retryHistoryJson) {
-            try {
-                const rh = JSON.parse(retryHistoryJson);
-                if (Array.isArray(rh) && rh.length) {
-                    const lastFail = rh[rh.length - 1];
-                    retryHistoryText = `\nLast Attempt Error:\nError: ${lastFail.error}\nCode Snippet causing error:\n${String(lastFail.code).slice(0, 500)}...`;
-                }
-            } catch (e) { }
-        }
-
+    const retryHistoryContext = buildRetryHistoryContext_(retryHistoryJson);
+    if (errorMessage) {
+        // リカバリーモード: エラーの種類だけ伝え、壊れたコードには依存しない
         promptContent = `
 [SYSTEM: RECOVERY MODE]
-The previous Mermaid code generation FAILED.
-The compiler returned this error:
+A previous attempt to generate a Mermaid diagram FAILED with this error:
 "${errorMessage}"
-
-${retryHistoryText}
 
 Original User Request:
 "${userPrompt}"
 
+${typeConstraint}
 ${languageConstraint}
-
-Current Broken Code (DO NOT COPY THIS BLINDLY):
-${currentCode}
+${retryHistoryContext}
 
 ### INSTRUCTIONS FOR RECOVERY
-1. **ANALYZE THE ERROR**: Look at the error message and the Current Code. Identify strictly why it failed (e.g., lines merged together, missing newlines, unescaped quotes).
-2. **DISCARD BAD STRUCTURE**: The Current Code is likely structurally broken (e.g., '5 5subgraph'). **IGNORE IT** and regenerate the diagram entirely from scratch using the "Original User Request".
-3. **SYNTAX RULES**:
-   - **NEWLINES**: Ensure every statement (subgraph, node, style) is on its own line.
-   - **QUOTES**: Wrap all node labels in double quotes. Example: id["Label Text"]
-   - **BRACKETS**: Do NOT use braces {} inside flowchart node labels. Use rectangles [] or rounds ().
-4. **OUTPUT FORMAT**:
-   - Return **ONLY** the corrected Mermaid code.
-   - **NO** markdown fences (no \`\`\`).
+1. **DO NOT** try to fix the previous code. Generate the diagram **entirely from scratch** based on the Original User Request above.
+2. Pay special attention to avoid the error type mentioned above.
+3. Common fixes:
+   - Ensure every statement is on its own line.
+   - Wrap ALL labels in double quotes: id["Label"]
+   - Balance all brackets, subgraph/end, alt/end.
+   - Use ASCII-only node IDs.
+   - **NEVER** use \`subgraph["Title"]\`. Use \`subgraph Title\` or \`subgraph id["Title"]\`.
+4. Output ONLY the JSON object as specified.
 `;
     } else {
         promptContent = `
@@ -141,6 +143,11 @@ Generate the Mermaid diagram code accordingly.
         text: systemPrompt + "\n\n" + promptContent
     });
 
+    // --- Temperature ---
+    const temp = (typeof temperatureOverride === 'number' && temperatureOverride > 0)
+        ? temperatureOverride
+        : 0.2;
+
     const payload = {
         contents: [
             {
@@ -149,8 +156,23 @@ Generate the Mermaid diagram code accordingly.
             }
         ],
         generationConfig: {
-            temperature: 0.2,
+            temperature: temp,
             maxOutputTokens: 8192,
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: "OBJECT",
+                properties: {
+                    diagramType: {
+                        type: "STRING",
+                        description: "The Mermaid diagram type keyword, e.g. flowchart, sequenceDiagram, stateDiagram-v2, erDiagram, gantt, pie, mindmap, etc."
+                    },
+                    mermaidCode: {
+                        type: "STRING",
+                        description: "The complete, syntactically valid Mermaid diagram code. Each statement must be on its own line (use newline characters). Do NOT include markdown fences."
+                    }
+                },
+                required: ["mermaidCode"]
+            }
         }
     };
 
@@ -163,9 +185,19 @@ Generate the Mermaid diagram code accordingly.
         };
 
         const response = UrlFetchApp.fetch(url, options);
+        const httpCode = response.getResponseCode();
         const json = JSON.parse(response.getContentText());
 
+        // --- レート制限 / クォータエラー検出 ---
         if (json.error) {
+            const errMsg = json.error.message || '';
+            const errCode = json.error.code || httpCode;
+            if (errCode === 429 || /quota/i.test(errMsg) || /rate/i.test(errMsg) || /Resource has been exhausted/i.test(errMsg)) {
+                const hint = usingPersonalKey
+                    ? 'APIキーの利用上限に達しました。しばらく待ってから再試行してください。'
+                    : 'APIキーの利用上限に達しました。設定画面（⚙）から個人のAPIキーを設定すると引き続き利用できます。';
+                throw new Error(hint);
+            }
             throw new Error(json.error.message);
         }
 
@@ -176,15 +208,38 @@ Generate the Mermaid diagram code accordingly.
         let rawText = json.candidates[0].content.parts[0].text;
         console.log("🤖 [Gemini] Raw Response:", rawText);
 
+        // --- JSON構造化出力からMermaidコードを抽出 ---
+        let cleanedText = '';
+        try {
+            const parsed = JSON.parse(rawText);
+            if (parsed && parsed.mermaidCode) {
+                cleanedText = String(parsed.mermaidCode);
+                console.log("✅ [Main] JSON structured output extracted successfully");
+            } else {
+                throw new Error("mermaidCode field missing");
+            }
+        } catch (jsonErr) {
+            // フォールバック: 従来のテキスト抽出
+            console.log("⚠️ [Main] JSON parse failed, falling back to text extraction:", jsonErr.message);
+            cleanedText = stripMarkdownCodeFences_(rawText);
+            cleanedText = decodeHtmlEntities_(cleanedText);
+            cleanedText = extractMermaidDiagram_(cleanedText);
+        }
+
         // --- Post-Processing ---
-        let cleanedText = stripMarkdownCodeFences_(rawText);
-        cleanedText = decodeHtmlEntities_(cleanedText);
-        cleanedText = extractMermaidDiagram_(cleanedText); // 強化版抽出
         cleanedText = decodeHtmlEntities_(cleanedText);
         cleanedText = cleanedText.replace(/\uFEFF/g, '').trim();
 
         if (/^(flowchart|graph)\b/i.test(cleanedText)) {
-            cleanedText = sanitizeFlowchartMermaid_(cleanedText); // 強化版サニタイズ
+            cleanedText = sanitizeFlowchartMermaid_(cleanedText);
+        }
+        if (/^\s*erDiagram\b/i.test(cleanedText)) {
+            cleanedText = sanitizeErDiagramMermaid_(cleanedText);
+        }
+
+        const valid = validateGeneratedMermaid_(cleanedText, diagramType);
+        if (!valid.ok) {
+            throw new Error(valid.message);
         }
 
         console.log("📦 [Main] Final Response to Client:", cleanedText);
@@ -192,8 +247,279 @@ Generate the Mermaid diagram code accordingly.
 
     } catch (e) {
         console.error("🔥 [Main] Error:", e.message);
-        throw new Error('Gemini API Error: ' + e.message);
+        throw new Error(e.message);
     }
+}
+
+function buildRetryHistoryContext_(retryHistoryJson) {
+    try {
+        const raw = String(retryHistoryJson == null ? '' : retryHistoryJson).trim();
+        if (!raw) return '';
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr) || arr.length === 0) return '';
+        const compact = arr.slice(-3).map((item, idx) => {
+            const n = idx + 1;
+            const m = item && item.model ? String(item.model) : 'unknown-model';
+            const e = item && item.error ? String(item.error).replace(/\s+/g, ' ').slice(0, 220) : 'unknown-error';
+            return `- Attempt ${n} (${m}): ${e}`;
+        }).join('\n');
+        return `\n\n# PREVIOUS FAILED ATTEMPTS\nAvoid repeating these failure patterns:\n${compact}`;
+    } catch (_) {
+        return '';
+    }
+}
+
+function normalizeDiagramTypeKeyword_(typeText) {
+    const raw = String(typeText == null ? '' : typeText).trim();
+    if (!raw || raw.toLowerCase() === 'auto') return '';
+    const first = raw.split(/\s+/)[0];
+    const low = first.toLowerCase();
+    if (low === 'graph' || low === 'flowchart') return 'flowchart';
+    if (low === 'sequencediagram') return 'sequenceDiagram';
+    if (low === 'classdiagram') return 'classDiagram';
+    if (low === 'statediagram-v2') return 'stateDiagram-v2';
+    if (low === 'erdiagram') return 'erDiagram';
+    if (low === 'gitgraph') return 'gitGraph';
+    if (low === 'c4context') return 'C4Context';
+    if (low === 'c4container') return 'C4Container';
+    if (low === 'c4component') return 'C4Component';
+    if (low === 'c4dynamic') return 'C4Dynamic';
+    if (low === 'c4deployment') return 'C4Deployment';
+    if (low === 'journey') return 'journey';
+    if (low === 'gantt') return 'gantt';
+    if (low === 'pie') return 'pie';
+    if (low === 'mindmap') return 'mindmap';
+    if (low === 'timeline') return 'timeline';
+    return first;
+}
+
+function detectCodeDiagramTypeKeyword_(code) {
+    const src = String(code == null ? '' : code).trim();
+    if (!src) return '';
+    const m = /^\s*([A-Za-z][A-Za-z0-9-]*)\b/.exec(src);
+    if (!m) return '';
+    return normalizeDiagramTypeKeyword_(m[1]);
+}
+
+function validateGeneratedMermaid_(code, requestedType) {
+    const src = String(code == null ? '' : code).trim();
+    if (!src) {
+        return { ok: false, message: 'Mermaidコードの生成結果が空です。' };
+    }
+
+    const detected = detectCodeDiagramTypeKeyword_(src);
+    const requested = normalizeDiagramTypeKeyword_(requestedType);
+    if (requested && requested !== detected) {
+        return {
+            ok: false,
+            message: `図タイプ不一致: requested=${requested}, generated=${detected || 'unknown'}`
+        };
+    }
+
+    if (detected === 'erDiagram') {
+        const lines = src.split('\n');
+        let inEntityBlock = false;
+        let depth = 0;
+        for (let i = 0; i < lines.length; i++) {
+            const line = String(lines[i] || '').trim();
+            if (!line || line.startsWith('%%')) continue;
+            const raw = String(lines[i] || '');
+
+            if (!inEntityBlock) {
+                if (/^\s*[A-Za-z][A-Za-z0-9_.-]*\s*\{\s*$/.test(raw)) {
+                    inEntityBlock = true;
+                    depth = 1;
+                    continue;
+                }
+                if (/--/.test(line)) continue; // relationship line
+                if (/^[A-Za-z0-9_.-]+\s*:\s*/.test(line)) {
+                    return {
+                        ok: false,
+                        message: `erDiagram構文エラー候補(line ${i + 1}): "ENTITY : ..." 形式は無効です`
+                    };
+                }
+                continue;
+            }
+
+            if (line.includes('{')) depth++;
+            if (line.includes('}')) {
+                depth--;
+                if (depth <= 0) {
+                    inEntityBlock = false;
+                    depth = 0;
+                }
+                continue;
+            }
+
+            if (!/^\s*[A-Za-z][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:PK|FK|UK))?(?:\s+"[^"]*")?\s*$/.test(raw)) {
+                return {
+                    ok: false,
+                    message: `erDiagram属性構文エラー候補(line ${i + 1}): "type name [PK|FK|UK] \"comment\"" 形式で記述してください`
+                };
+            }
+        }
+    }
+
+    return { ok: true };
+}
+
+function sanitizeErDiagramMermaid_(code) {
+    const src = String(code == null ? '' : code).replace(/\r/g, '');
+    const lines = src.split('\n');
+    let inEr = false;
+    let inEntityBlock = false;
+    let entityDepth = 0;
+    let suppressCurrentEntityBlock = false;
+    const seenEntities = new Set();
+
+    for (let i = 0; i < lines.length; i++) {
+        const raw = String(lines[i] || '');
+        const line = raw.trim();
+        if (!line) continue;
+
+        if (/^\s*erDiagram\b/i.test(raw)) {
+            inEr = true;
+            continue;
+        }
+        if (!inEr) continue;
+
+        // Entity block start: ENTITY_NAME {
+        if (!inEntityBlock) {
+            // Flowchart-like entity header: ENTITY["label"] {
+            const mEntityStartWithLabel = raw.match(/^\s*([A-Za-z][A-Za-z0-9_.-]*)\s*\[[^\]]*\]\s*\{\s*$/);
+            if (mEntityStartWithLabel) {
+                const entityName = String(mEntityStartWithLabel[1] || '').trim();
+                lines[i] = raw.replace(/^(\s*)([A-Za-z][A-Za-z0-9_.-]*)\s*\[[^\]]*\]\s*\{\s*$/, '$1$2 {');
+                inEntityBlock = true;
+                entityDepth = 1;
+                suppressCurrentEntityBlock = seenEntities.has(entityName);
+                if (suppressCurrentEntityBlock) {
+                    lines[i] = '%% removed duplicate ER entity block: ' + raw;
+                } else {
+                    seenEntities.add(entityName);
+                }
+                continue;
+            }
+
+            const mEntityStart = raw.match(/^\s*([A-Za-z][A-Za-z0-9_.-]*)\s*\{\s*$/);
+            if (mEntityStart) {
+                const entityName = String(mEntityStart[1] || '').trim();
+                inEntityBlock = true;
+                entityDepth = 1;
+                suppressCurrentEntityBlock = seenEntities.has(entityName);
+                if (suppressCurrentEntityBlock) {
+                    lines[i] = '%% removed duplicate ER entity block: ' + raw;
+                } else {
+                    seenEntities.add(entityName);
+                }
+                continue;
+            }
+        }
+
+        if (inEntityBlock) {
+            if (line.includes('{')) entityDepth++;
+            if (line.includes('}')) {
+                entityDepth--;
+                if (suppressCurrentEntityBlock) {
+                    lines[i] = '%% removed duplicate ER entity block: ' + raw;
+                }
+                if (entityDepth <= 0) {
+                    inEntityBlock = false;
+                    entityDepth = 0;
+                    suppressCurrentEntityBlock = false;
+                }
+                continue;
+            }
+
+            // Drop all inner lines for duplicate entity blocks
+            if (suppressCurrentEntityBlock) {
+                lines[i] = '%% removed duplicate ER entity block: ' + raw;
+                continue;
+            }
+
+            // Keep only valid ER attribute syntax inside entity blocks.
+            // valid examples:
+            //   string userId PK "ユーザーID"
+            //   int amount
+            //   datetime createdAt FK
+            const mAttr = raw.match(/^\s*[A-Za-z][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*(?:\s+(?:PK|FK|UK))?(?:\s+"[^"]*")?\s*$/);
+            if (!mAttr) {
+                lines[i] = '%% removed invalid ER attribute line: ' + raw;
+            }
+            continue;
+        }
+
+        if (line.startsWith('%%')) continue;
+        // Invalid flowchart-like edge in ER
+        if (/-->\s*/.test(line)) {
+            lines[i] = '%% removed invalid ER line: ' + raw;
+            continue;
+        }
+        if (/--/.test(line)) {
+            // Normalize flowchart-like entity labels in relationship lines:
+            // A["label"] ||--o{ B["label"] : "rel"  -> A ||--o{ B : "rel"
+            let normalizedRel = raw
+                .replace(/([A-Za-z][A-Za-z0-9_.-]*)\s*\[[^\]]*]/g, '$1')
+                .replace(/([A-Za-z][A-Za-z0-9_.-]*)\s*\{[^}]*}/g, '$1')
+                .replace(/([A-Za-z][A-Za-z0-9_.-]*)\s*\([^)]*\)/g, '$1');
+
+            normalizedRel = normalizeErRelationshipLine_(normalizedRel);
+
+            // Drop unsupported inheritance-like connectors from flowchart in ER context.
+            // Example: A --|> B : "x" -> comment out.
+            if (/--\s*\|>/.test(normalizedRel)) {
+                lines[i] = '%% removed invalid ER relation line: ' + raw;
+                continue;
+            }
+            lines[i] = normalizedRel;
+            continue;
+        } // relationship line
+
+        // Invalid entity annotation like: CONCEPT : "..."
+        if (/^[A-Za-z0-9_.-]+\s*:\s*/.test(line)) {
+            lines[i] = '%% removed invalid ER line: ' + raw;
+            continue;
+        }
+
+        // Invalid node-like declaration such as NAME[TYPE] : ...
+        if (/^[A-Za-z0-9_.-]+\[[^\]]+\]\s*:\s*/.test(line)) {
+            lines[i] = '%% removed invalid ER line: ' + raw;
+            continue;
+        }
+    }
+    return lines.join('\n').trim();
+}
+
+function normalizeErCardinality_(token, side) {
+    const t = String(token == null ? '' : token).replace(/\s+/g, '');
+    if (!t) return '';
+    const valid = new Set(['||', '|o', 'o|', '|{', '}|', '}o', 'o{']);
+    if (valid.has(t)) return t;
+    if (t === '|') return '||';
+    if (t === 'o') return side === 'left' ? 'o|' : 'o{';
+    if (t === '{') return '|{';
+    if (t === '}') return '}|';
+    if (t === '|o|') return '|o';
+    if (t === '|{|' || t === '|{|') return '|{';
+    if (t === '}o|' || t === '}o') return '}o';
+    if (t === 'o{|') return 'o{';
+    return t.slice(0, 2);
+}
+
+function normalizeErRelationshipLine_(line) {
+    const raw = String(line == null ? '' : line);
+    const m = raw.match(/^\s*([A-Za-z][A-Za-z0-9_.-]*)\s*([|o{}]{1,2})\s*--\s*([|o{}]{1,2})\s*([A-Za-z][A-Za-z0-9_.-]*)(\s*:\s*.*)?\s*$/);
+    if (!m) return raw;
+
+    const from = m[1];
+    const leftRaw = m[2];
+    const rightRaw = m[3];
+    const to = m[4];
+    const tail = m[5] || '';
+
+    const left = normalizeErCardinality_(leftRaw, 'left');
+    const right = normalizeErCardinality_(rightRaw, 'right');
+    return `${from} ${left}--${right} ${to}${tail}`;
 }
 
 function stripMarkdownCodeFences_(text) {
@@ -264,9 +590,8 @@ function sanitizeFlowchartMermaid_(code) {
     // 3. セミコロンを改行に変換
     out = out.replace(/;\s*/g, '\n');
 
-    // ★追加修正1: AIが生成しがちな subgraph["Title"] を subgraph "Title" に補正
-    // これをやらないと、前の行とくっついた時にパースエラーになりやすい
-    out = out.replace(/(\s*subgraph)\s*\["([^"]+)"\]/gi, '$1 "$2"');
+    // 4. subgraph["..."]:::class -> subgraph["..."] (drop invalid style attachment)
+    out = out.replace(/(\s*subgraph)\s*\["([^"]+)"\]:::([^\s]*)/gi, '$1["$2"]');
 
     // ★追加修正2: 行の結合を強制分離 (数字/文字 + subgraph/end/classDef/style)
     // \b ではなく、後ろにアルファベットが続かないことを条件にして強力に分離
@@ -287,26 +612,73 @@ function sanitizeFlowchartMermaid_(code) {
         return kw + ' ' + dir + '\n' + rest;
     });
 
-    // 8. 単独ノード定義の正規化
-    out = out.replace(/^\s*([A-Za-z0-9_]+)\s+["']([^"']+)["']\s*$/gm, function (_, id, label) {
-        return id + '["' + escapeFlowLabel_(label) + '"]';
+    // 8. 単独ノード定義の正規化 (予約語は除外)
+    out = out.replace(/^(\s*)([A-Za-z0-9_]+)\s+["']([^"']+)["']\s*$/gm, function (full, indent, id, label) {
+        if (/^(subgraph|end|classDef|class|style|linkStyle|click)$/i.test(id)) {
+            return full;
+        }
+        return indent + id + '["' + escapeFlowLabel_(label) + '"]';
     });
 
-    // 9. subgraphタイトルの引用符処理
+    // 9. subgraphヘッダーの正規化
     const lines = out.split('\n');
+    let autoSubgraphId = 1;
     for (let i = 0; i < lines.length; i++) {
         // classDef行などはスキップ
         if (/^\s*classDef\b/.test(lines[i])) continue;
 
-        const m = lines[i].match(/^(\s*subgraph)\s+(.+?)\s*$/i);
+        // Remove trailing ::: from lines (invalid style attachment to subgraph start)
+        lines[i] = lines[i].replace(/:::$/, '').replace(/:::\s*$/, '');
+
+        const m = lines[i].match(/^(\s*)subgraph\s*(.+?)\s*$/i);
         if (!m) continue;
-        const head = m[1];
-        const tail = m[2];
-        const t = tail.trim();
-        if (!t) continue;
-        if (t.startsWith('"') || t.startsWith("'")) continue;
-        if (t.indexOf('[') !== -1 || t.indexOf(']') !== -1) continue;
-        lines[i] = head + ' "' + escapeFlowLabel_(t) + '"';
+        const indent = m[1];
+        const tail = String(m[2] || '').trim();
+        if (!tail) continue;
+
+        // subgraph["Title"] / subgraph['Title'] -> subgraph SGx["Title"]
+        let mm = tail.match(/^\[(["'])([\s\S]*?)\1\]\s*$/);
+        if (mm) {
+            const title = escapeFlowLabel_(mm[2]);
+            lines[i] = indent + 'subgraph SG' + (autoSubgraphId++) + '["' + title + '"]';
+            continue;
+        }
+
+        // subgraph ID["Title"] / subgraph ID['Title']
+        mm = tail.match(/^([A-Za-z0-9_]+)\s*\[(["'])([\s\S]*?)\2\]\s*$/);
+        if (mm) {
+            const id = mm[1];
+            const title = escapeFlowLabel_(mm[3]);
+            lines[i] = indent + 'subgraph ' + id + '["' + title + '"]';
+            continue;
+        }
+
+        // subgraph "Title" / subgraph 'Title'
+        mm = tail.match(/^(["'])([\s\S]*?)\1\s*$/);
+        if (mm) {
+            const title = escapeFlowLabel_(mm[2]);
+            lines[i] = indent + 'subgraph SG' + (autoSubgraphId++) + '["' + title + '"]';
+            continue;
+        }
+
+        // subgraph ID
+        mm = tail.match(/^([A-Za-z0-9_]+)\s*$/);
+        if (mm) {
+            lines[i] = indent + 'subgraph ' + mm[1];
+            continue;
+        }
+
+        // subgraph ID title words...
+        mm = tail.match(/^([A-Za-z0-9_]+)\s+(.+)$/);
+        if (mm) {
+            const id = mm[1];
+            const title = escapeFlowLabel_(mm[2]);
+            lines[i] = indent + 'subgraph ' + id + '["' + title + '"]';
+            continue;
+        }
+
+        // Fallback: whole tail as title
+        lines[i] = indent + 'subgraph SG' + (autoSubgraphId++) + '["' + escapeFlowLabel_(tail) + '"]';
     }
     out = lines.join('\n');
 
@@ -317,8 +689,8 @@ function sanitizeFlowchartMermaid_(code) {
             t = t.slice(1, -1).trim();
         }
         t = t.replace(/\\+\"/g, "'").replace(/"/g, "'");
-        t = t.replace(/'/g, '’');
-        t = t.replace(/\(/g, '（').replace(/\)/g, '）');
+        t = t.replace(/'/g, '\u2019');
+        t = t.replace(/\(/g, '\uFF08').replace(/\)/g, '\uFF09');
         t = t.replace(/\s*\n+\s*/g, ' ').trim();
         if (!t) t = '?';
         if (/[{}\[\]]/.test(t)) {
@@ -328,12 +700,13 @@ function sanitizeFlowchartMermaid_(code) {
     });
 
     // 11. 角括弧ノード [ ... ] の修正 (引用符内無視版)
-    out = out.replace(/([A-Za-z0-9_]+)\[(?!\[)((?:[^"\]]|"[^"]*")*)\]/g, function (_, id, label) {
+    out = out.replace(/([A-Za-z0-9_]+)\[(?!\[)((?:[^"\]]|"[^"]*")*)]/g, function (_, id, label) {
         let t = String(label == null ? '' : label).trim();
         if (!t) return id + '[""]';
         if (/^".*"$/.test(t)) {
             let inner = t.slice(1, -1);
             inner = inner.replace(/\\+"/g, "'").replace(/"/g, "'");
+            inner = inner.replace(/'{2,}/g, "'");
             return id + '["' + inner + '"]';
         }
         return id + '["' + escapeFlowLabel_(t) + '"]';
@@ -349,6 +722,19 @@ function sanitizeFlowchartMermaid_(code) {
             return id + '("' + inner + '")';
         }
         return id + '("' + escapeFlowLabel_(t) + '")';
+    });
+
+    // 13. 括弧ノード補正の副作用で角括弧ラベル内に再混入した " を再正規化
+    out = out.replace(/([A-Za-z0-9_]+)\[(?!\[)((?:[^"\]]|"[^"]*")*)]/g, function (_, id, label) {
+        let t = String(label == null ? '' : label).trim();
+        if (!t) return id + '[""]';
+        if (/^".*"$/.test(t)) {
+            let inner = t.slice(1, -1);
+            inner = inner.replace(/\\+"/g, "'").replace(/"/g, "'");
+            inner = inner.replace(/'{2,}/g, "'");
+            return id + '["' + inner + '"]';
+        }
+        return id + '["' + escapeFlowLabel_(t) + '"]';
     });
 
     // ★追加修正3: 閉じ忘れた引用符の補正 (簡易版)
@@ -375,125 +761,12 @@ function sanitizeFlowchartMermaid_(code) {
 function escapeFlowLabel_(label) {
     let s = String(label == null ? '' : label);
     s = s
-        .replace(/[“”„‟❝❞]/g, '"')
-        .replace(/[‘’‚‛❛❜]/g, "'");
+        .replace(/[\u201C\u201D\u201E\u201F\u275D\u275E]/g, '"')
+        .replace(/[\u2018\u2019\u201A\u201B\u275B\u275C]/g, "'");
     s = s.replace(/\uFEFF/g, '');
     s = s.replace(/\\+\"/g, "'");
     s = s.replace(/"/g, "'");
+    s = s.replace(/'{2,}/g, "'");
     s = s.replace(/\s*\n+\s*/g, ' ');
     return s.trim();
-}
-
-// --- History Functions (Unchanged) ---
-function saveDiagramHistory(entry) {
-    const userProps = PropertiesService.getUserProperties();
-    const normalized = fitHistoryEntrySize_(normalizeHistoryEntry_(entry));
-    const id = Utilities.getUuid();
-    normalized.id = id;
-    normalized.createdAt = Date.now();
-    userProps.setProperty(DIAGRAM_HISTORY_ITEM_PREFIX + id, JSON.stringify(normalized));
-    const index = getHistoryIndex_(userProps);
-    index.unshift(id);
-    const toDelete = index.slice(DIAGRAM_HISTORY_MAX_ENTRIES);
-    const nextIndex = index.slice(0, DIAGRAM_HISTORY_MAX_ENTRIES);
-    userProps.setProperty(DIAGRAM_HISTORY_INDEX_KEY, JSON.stringify(nextIndex));
-    for (const oldId of toDelete) {
-        userProps.deleteProperty(DIAGRAM_HISTORY_ITEM_PREFIX + oldId);
-    }
-    return { ok: true, id };
-}
-
-function listDiagramHistory() {
-    const userProps = PropertiesService.getUserProperties();
-    const index = getHistoryIndex_(userProps);
-    if (!index.length) return [];
-    const items = [];
-    for (const id of index) {
-        const raw = userProps.getProperty(DIAGRAM_HISTORY_ITEM_PREFIX + id);
-        if (!raw) continue;
-        try { items.push(JSON.parse(raw)); } catch (e) { }
-    }
-    items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return items;
-}
-
-function listDiagramHistoryPage(limit, offset) {
-    const userProps = PropertiesService.getUserProperties();
-    const index = getHistoryIndex_(userProps);
-    const total = index.length;
-    const rawLimit = Number(limit);
-    const rawOffset = Number(offset);
-    const safeLimit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(30, Math.floor(rawLimit))) : 10;
-    const safeOffset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
-    const slice = index.slice(safeOffset, safeOffset + safeLimit);
-    const items = [];
-    for (const id of slice) {
-        const raw = userProps.getProperty(DIAGRAM_HISTORY_ITEM_PREFIX + id);
-        if (!raw) continue;
-        try { items.push(JSON.parse(raw)); } catch (e) { }
-    }
-    items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    return { items, total, offset: safeOffset, limit: safeLimit, hasMore: (safeOffset + slice.length) < total };
-}
-
-function getDiagramHistoryItem(id) {
-    if (!id) return null;
-    const userProps = PropertiesService.getUserProperties();
-    const raw = userProps.getProperty(DIAGRAM_HISTORY_ITEM_PREFIX + id);
-    if (!raw) return null;
-    try { return JSON.parse(raw); } catch (e) { return null; }
-}
-
-function deleteDiagramHistory(id) {
-    if (!id) return { ok: false };
-    const userProps = PropertiesService.getUserProperties();
-    userProps.deleteProperty(DIAGRAM_HISTORY_ITEM_PREFIX + id);
-    const index = getHistoryIndex_(userProps).filter((x) => x !== id);
-    userProps.setProperty(DIAGRAM_HISTORY_INDEX_KEY, JSON.stringify(index));
-    return { ok: true };
-}
-
-function clearDiagramHistory() {
-    const userProps = PropertiesService.getUserProperties();
-    const index = getHistoryIndex_(userProps);
-    for (const id of index) {
-        userProps.deleteProperty(DIAGRAM_HISTORY_ITEM_PREFIX + id);
-    }
-    userProps.deleteProperty(DIAGRAM_HISTORY_INDEX_KEY);
-    return { ok: true };
-}
-
-function getHistoryIndex_(userProps) {
-    try {
-        const raw = userProps.getProperty(DIAGRAM_HISTORY_INDEX_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-    } catch (e) { return []; }
-}
-
-function normalizeHistoryEntry_(entry) {
-    const safe = entry && typeof entry === 'object' ? entry : {};
-    const prompt = typeof safe.prompt === 'string' ? safe.prompt : '';
-    const code = typeof safe.code === 'string' ? safe.code : '';
-    return {
-        prompt: prompt.slice(0, DIAGRAM_HISTORY_MAX_PROMPT_CHARS),
-        code: code.slice(0, DIAGRAM_HISTORY_MAX_CODE_CHARS),
-        diagramType: typeof safe.diagramType === 'string' ? safe.diagramType : null,
-        model: typeof safe.model === 'string' ? safe.model : null,
-        theme: typeof safe.theme === 'string' ? safe.theme : null,
-        fileName: typeof safe.fileName === 'string' ? safe.fileName : null,
-        meta: safe.meta && typeof safe.meta === 'object' ? safe.meta : {},
-    };
-}
-
-function fitHistoryEntrySize_(normalized) {
-    const MAX_JSON_CHARS = 8500;
-    let json = JSON.stringify(normalized);
-    if (json.length <= MAX_JSON_CHARS) return normalized;
-    const code = typeof normalized.code === 'string' ? normalized.code : '';
-    const overflow = json.length - MAX_JSON_CHARS;
-    const nextCodeLen = Math.max(0, code.length - overflow - 50);
-    const trimmed = { ...normalized, code: code.slice(0, nextCodeLen) };
-    json = JSON.stringify(trimmed);
-    return json.length <= MAX_JSON_CHARS ? trimmed : { ...trimmed, code: '' };
 }

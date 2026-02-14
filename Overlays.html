@@ -115,6 +115,9 @@
           <button type="button" class="canvas-control flex-1 py-2 rounded-lg text-xs font-extrabold tracking-wider"
             data-settings-tab="ui" onclick="setSettingsTab('ui')"><span id="settingsTabUi">UI</span></button>
           <button type="button" class="canvas-control flex-1 py-2 rounded-lg text-xs font-extrabold tracking-wider"
+            data-settings-tab="apikey" onclick="setSettingsTab('apikey')"><span
+              id="settingsTabApikey">API KEY</span></button>
+          <button type="button" class="canvas-control flex-1 py-2 rounded-lg text-xs font-extrabold tracking-wider"
             data-settings-tab="guide" onclick="setSettingsTab('guide')"><span
               id="settingsTabGuide">GUIDE</span></button>
         </div>
@@ -153,6 +156,45 @@
                     id="fontSizeNormal">Normal</span></button>
                 <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
                   data-font-size="lg" onclick="setFontSizeAndSync('lg')"><span id="fontSizeLarge">Large</span></button>
+              </div>
+            </div>
+          </div>
+
+          <div data-settings-panel="apikey" class="grid gap-4 hidden">
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-amber-400">key</span>
+              <div class="text-xs font-bold tracking-wider ui-muted">GEMINI API KEY</div>
+            </div>
+
+            <div class="ui-surface rounded-xl border p-4 grid gap-3 shadow-sm">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="material-symbols-outlined text-sm" id="apiKeyStatusIcon">cloud</span>
+                <span id="apiKeyStatusText" class="ui-muted font-medium">共有キーを使用中</span>
+              </div>
+
+              <label class="grid gap-1">
+                <span class="text-xs font-bold tracking-wider ui-muted" id="apiKeyInputLabel">個人のAPIキー</span>
+                <input id="apiKeyInput" type="password" autocomplete="off"
+                  class="w-full ui-input border rounded-lg px-3 py-2 text-sm outline-none font-mono"
+                  placeholder="AIza..." />
+              </label>
+
+              <div class="flex gap-2">
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold flex-1"
+                  onclick="saveApiKey()">
+                  <span class="material-symbols-outlined text-sm align-middle mr-1">save</span>保存
+                </button>
+                <button type="button" class="canvas-glass canvas-control px-3 py-2 rounded-lg text-xs font-bold"
+                  onclick="clearApiKey()">
+                  <span class="material-symbols-outlined text-sm align-middle mr-1">delete</span>削除
+                </button>
+              </div>
+
+              <div class="text-xs ui-muted leading-relaxed" id="apiKeyHelpText">
+                デフォルトでは共有キー（無料枠）を使用します。<br>
+                利用上限に達した場合は、個人のAPIキーを設定してください。<br>
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener"
+                  class="text-blue-400 hover:underline">Google AI Studio でAPIキーを取得</a>
               </div>
             </div>
           </div>
