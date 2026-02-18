@@ -775,7 +775,7 @@
     if (typeof mermaid !== "undefined") {
       mermaid.initialize({
         startOnLoad: false,
-        securityLevel: "loose",
+        securityLevel: "strict",
         theme: "dark",
       });
     } else {
@@ -1565,7 +1565,7 @@
     const theme = getDiagramTheme();
     const config = Object.assign({}, getMermaidConfig(theme), {
       startOnLoad: false,
-      securityLevel: "loose",
+      securityLevel: "strict",
     });
     mermaid.initialize(config);
 
