@@ -775,5 +775,9 @@ function escapeFlowLabel_(label) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { decodeHtmlEntities_ };
+    module.exports = {
+        decodeHtmlEntities_,
+        detectCodeDiagramTypeKeyword_,
+        normalizeDiagramTypeKeyword_
+    };
 }
