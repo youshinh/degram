@@ -45,7 +45,7 @@ function callGeminiAPI(userPrompt, modelVersion, diagramType, fileData, currentC
         'flash-lite': 'gemini-flash-lite-latest'
     };
     const model = modelMap[modelVersion] || 'gemini-flash-lite-latest';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
     // getSystemPrompt() is defined in Prompts.js
     let systemPrompt = getSystemPrompt();
@@ -180,6 +180,9 @@ Generate the Mermaid diagram code accordingly.
         const options = {
             method: 'post',
             contentType: 'application/json',
+            headers: {
+                'x-goog-api-key': apiKey
+            },
             payload: JSON.stringify(payload),
             muteHttpExceptions: true
         };
