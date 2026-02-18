@@ -4480,6 +4480,8 @@
     const list = document.getElementById("historyList");
     if (!list) return;
 
+    const fragment = document.createDocumentFragment();
+
     for (const item of items || []) {
       const ts = item.createdAt ? new Date(item.createdAt) : null;
       const timeText = ts ? ts.toLocaleString() : "";
@@ -4547,8 +4549,9 @@
         copyBtn.addEventListener("click", (e) => copyErrorLog(e, item.id));
       deleteBtn.addEventListener("click", () => deleteHistory(item.id));
 
-      list.appendChild(row);
+      fragment.appendChild(row);
     }
+    list.appendChild(fragment);
   }
 
   function loadHistory(id) {
