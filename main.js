@@ -770,3 +770,10 @@ function escapeFlowLabel_(label) {
     s = s.replace(/\s*\n+\s*/g, ' ');
     return s.trim();
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        sanitizeFlowchartMermaid_,
+        escapeFlowLabel_ // Exporting helper for potential separate testing if needed
+    };
+}
