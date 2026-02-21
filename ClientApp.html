@@ -784,6 +784,7 @@
     setupPanZoom();
     setupPanelResize();
     loadUiPrefs();
+    migrateApiKey(); // Check server status and migrate if needed
     changeTheme({ skipRender: skipAutoRenderOnBoot });
     if (skipAutoRenderOnBoot) {
       showToast(
@@ -2411,7 +2412,7 @@
         null, // errorMessage
         null, // retryHistory
         getCurrentLang(),
-        getApiKey(),
+        null, // customApiKey (deprecated, now handled on server via UserProperties)
         null // temperatureOverride
       );
   }
@@ -2547,10 +2548,9 @@
           currentRetry++;
 
           let nextModel = selectedModel;
-          const userKey = getApiKey();
 
           // 3rd retry: Upgrade to Flash ONLY if personal key exists
-          if (currentRetry >= 3 && userKey) {
+          if (currentRetry >= 3 && hasUserKey) {
             nextModel = "flash";
           }
 
@@ -2560,7 +2560,7 @@
           // 3rd retry: 0.7 (if no key upgrade)
           let nextTemp = null;
           if (currentRetry === 2) nextTemp = 0.5;
-          if (currentRetry >= 3 && !userKey) nextTemp = 0.7;
+          if (currentRetry >= 3 && !hasUserKey) nextTemp = 0.7;
 
           document.getElementById("retryCount").classList.remove("hidden");
           const modelNameDisplay = nextModel === "flash" ? "Flash" : "Flash-Lite";
@@ -2585,7 +2585,7 @@
               buildRecoveryErrorContext(error, layoutedCode), // Provide richer error context for recovery mode
               JSON.stringify(repairHistory),
               getCurrentLang(),
-              userKey,
+              null, // customApiKey (deprecated)
               nextTemp
             );
           return false;
@@ -4344,12 +4344,10 @@
     btn.disabled = !!disabled;
     btn.classList.toggle("opacity-50", !!disabled);
   }
-  // --- API Key Management (Local Storage) ---
-  const API_KEY_STORAGE_KEY = "diagram.userApiKey";
-
-  function getApiKey() {
-    return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
-  }
+  // --- API Key Management (Server-Side Properties) ---
+  // Note: Local storage key is kept only for migration purposes.
+  const LEGACY_API_KEY_STORAGE_KEY = "diagram.userApiKey";
+  let hasUserKey = false;
 
   function saveApiKey() {
     const input = document.getElementById("apiKeyInput");
@@ -4359,28 +4357,43 @@
       showToast("error", "APIキーを入力してください");
       return;
     }
-    localStorage.setItem(API_KEY_STORAGE_KEY, key);
-    input.value = "";
-    updateApiKeyStatusUI();
-    showToast("success", "APIキーを保存しました（ブラウザに保存）");
+
+    // Save to server
+    google.script.run
+      .withSuccessHandler(() => {
+        hasUserKey = true;
+        input.value = "";
+        updateApiKeyStatusUI();
+        showToast("success", "APIキーを保存しました（UserProperties）");
+      })
+      .withFailureHandler((err) => {
+        showToast("error", "APIキーの保存に失敗しました: " + err);
+      })
+      .saveUserApiKey(key);
   }
 
   function clearApiKey() {
-    localStorage.removeItem(API_KEY_STORAGE_KEY);
-    const input = document.getElementById("apiKeyInput");
-    if (input) input.value = "";
-    updateApiKeyStatusUI();
-    showToast("info", "APIキーを削除しました");
+    google.script.run
+      .withSuccessHandler(() => {
+        hasUserKey = false;
+        const input = document.getElementById("apiKeyInput");
+        if (input) input.value = "";
+        updateApiKeyStatusUI();
+        showToast("info", "APIキーを削除しました");
+      })
+      .withFailureHandler((err) => {
+        showToast("error", "APIキーの削除に失敗しました: " + err);
+      })
+      .deleteUserApiKey();
   }
 
   function updateApiKeyStatusUI() {
-    const key = getApiKey();
     const icon = document.getElementById("apiKeyStatusIcon");
     const text = document.getElementById("apiKeyStatusText");
     const input = document.getElementById("apiKeyInput");
 
     if (icon && text) {
-      if (key) {
+      if (hasUserKey) {
         icon.textContent = "lock";
         icon.className = "material-symbols-outlined text-sm text-green-400";
         text.textContent = "個人のAPIキーを使用中";
@@ -4393,8 +4406,38 @@
       }
     }
     if (input) {
-      input.placeholder = key ? "（設定済み）" : "AIza...";
+      input.placeholder = hasUserKey ? "（設定済み）" : "AIza...";
     }
+  }
+
+  function migrateApiKey() {
+    // Check server status first
+    google.script.run
+      .withSuccessHandler((serverHasKey) => {
+        hasUserKey = serverHasKey;
+        updateApiKeyStatusUI();
+
+        // Check for legacy local storage key
+        const localKey = localStorage.getItem(LEGACY_API_KEY_STORAGE_KEY);
+        if (localKey) {
+          if (!serverHasKey) {
+            // Migrate local key to server
+            console.log("Migrating API key from localStorage to UserProperties...");
+            google.script.run
+              .withSuccessHandler(() => {
+                localStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
+                hasUserKey = true;
+                updateApiKeyStatusUI();
+                showToast("success", "APIキーをサーバー（UserProperties）に移行しました");
+              })
+              .saveUserApiKey(localKey);
+          } else {
+            // Server has key, just clean up local
+            localStorage.removeItem(LEGACY_API_KEY_STORAGE_KEY);
+          }
+        }
+      })
+      .hasUserApiKey();
   }
 
   // --- History Management (Local Storage) ---

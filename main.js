@@ -3,6 +3,21 @@
  * ユーザーが個人キーを設定している場合はそちらを優先
  */
 const SCRIPT_PROP_KEY = 'GEMINI_API_KEY';
+const USER_API_KEY_PROPERTY = 'GEMINI_USER_API_KEY';
+
+function saveUserApiKey(key) {
+    if (!key) return;
+    PropertiesService.getUserProperties().setProperty(USER_API_KEY_PROPERTY, key);
+}
+
+function deleteUserApiKey() {
+    PropertiesService.getUserProperties().deleteProperty(USER_API_KEY_PROPERTY);
+}
+
+function hasUserApiKey() {
+    const key = PropertiesService.getUserProperties().getProperty(USER_API_KEY_PROPERTY);
+    return !!key;
+}
 
 function include(filename) {
     return HtmlService.createHtmlOutputFromFile(filename).getContent();
@@ -29,8 +44,10 @@ function doGet() {
  * @param {number} temperatureOverride - リトライ時のtemperature上書き
  */
 function callGeminiAPI(userPrompt, modelVersion, diagramType, fileData, currentCode, errorMessage, retryHistoryJson, uiLang, customApiKey, temperatureOverride) {
-    // --- APIキー取得: 個人キー優先 → スクリプトプロパティ ---
-    const userKey = customApiKey || null;
+    // --- APIキー取得: 個人キー優先（UserProperties） → 引数（後方互換） → スクリプトプロパティ ---
+    // Note: customApiKey (argument) is kept for backward compatibility but deprecated in client.
+    const storedUserKey = PropertiesService.getUserProperties().getProperty(USER_API_KEY_PROPERTY);
+    const userKey = storedUserKey || customApiKey || null;
     const scriptKey = PropertiesService.getScriptProperties().getProperty(SCRIPT_PROP_KEY);
     const apiKey = userKey || scriptKey;
     const usingPersonalKey = !!userKey;
@@ -775,5 +792,11 @@ function escapeFlowLabel_(label) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { decodeHtmlEntities_ };
+    module.exports = {
+        decodeHtmlEntities_,
+        callGeminiAPI,
+        saveUserApiKey,
+        deleteUserApiKey,
+        hasUserApiKey
+    };
 }
