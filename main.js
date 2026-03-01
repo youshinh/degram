@@ -547,6 +547,15 @@ function decodeHtmlEntities_(text) {
     return s;
 }
 
+const MERMAID_KEYWORDS_ = [
+    'flowchart', 'graph', 'sequenceDiagram', 'gantt', 'classDiagram', 'stateDiagram-v2',
+    'erDiagram', 'journey', 'mindmap', 'timeline', 'pie', 'gitGraph',
+    'C4Context', 'C4Container', 'C4Component', 'C4Dynamic', 'C4Deployment'
+];
+
+// Pre-compile regex for performance
+const MERMAID_START_PATTERN_ = new RegExp(`(^|\\n)\\s*(${MERMAID_KEYWORDS_.join('|')})\\b`, 'i');
+
 // 強化版: 不要なヘッダー除去機能付き
 function extractMermaidDiagram_(text) {
     let raw = String(text == null ? '' : text);
@@ -560,15 +569,8 @@ function extractMermaidDiagram_(text) {
     // 3. 全角スペースや特殊な空白を半角スペースに正規化
     raw = raw.replace(/[\u00A0\u1680\u180E\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ');
 
-    const keywords = [
-        'flowchart', 'graph', 'sequenceDiagram', 'gantt', 'classDiagram', 'stateDiagram-v2',
-        'erDiagram', 'journey', 'mindmap', 'timeline', 'pie', 'gitGraph',
-        'C4Context', 'C4Container', 'C4Component', 'C4Dynamic', 'C4Deployment'
-    ];
-
     // 文頭、または改行の直後にキーワードがある場所を検索
-    const pattern = new RegExp(`(^|\\n)\\s*(${keywords.join('|')})\\b`, 'i');
-    const match = raw.match(pattern);
+    const match = raw.match(MERMAID_START_PATTERN_);
 
     if (match && typeof match.index === 'number') {
         // キーワードが見つかった位置から末尾までを切り出す
@@ -775,5 +777,5 @@ function escapeFlowLabel_(label) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { decodeHtmlEntities_ };
+    module.exports = { decodeHtmlEntities_, extractMermaidDiagram_ };
 }
