@@ -272,28 +272,32 @@ function buildRetryHistoryContext_(retryHistoryJson) {
     }
 }
 
+const DIAGRAM_TYPE_MAP_ = {
+    'graph': 'flowchart',
+    'flowchart': 'flowchart',
+    'sequencediagram': 'sequenceDiagram',
+    'classdiagram': 'classDiagram',
+    'statediagram-v2': 'stateDiagram-v2',
+    'erdiagram': 'erDiagram',
+    'gitgraph': 'gitGraph',
+    'c4context': 'C4Context',
+    'c4container': 'C4Container',
+    'c4component': 'C4Component',
+    'c4dynamic': 'C4Dynamic',
+    'c4deployment': 'C4Deployment',
+    'journey': 'journey',
+    'gantt': 'gantt',
+    'pie': 'pie',
+    'mindmap': 'mindmap',
+    'timeline': 'timeline'
+};
+
 function normalizeDiagramTypeKeyword_(typeText) {
     const raw = String(typeText == null ? '' : typeText).trim();
     if (!raw || raw.toLowerCase() === 'auto') return '';
     const first = raw.split(/\s+/)[0];
     const low = first.toLowerCase();
-    if (low === 'graph' || low === 'flowchart') return 'flowchart';
-    if (low === 'sequencediagram') return 'sequenceDiagram';
-    if (low === 'classdiagram') return 'classDiagram';
-    if (low === 'statediagram-v2') return 'stateDiagram-v2';
-    if (low === 'erdiagram') return 'erDiagram';
-    if (low === 'gitgraph') return 'gitGraph';
-    if (low === 'c4context') return 'C4Context';
-    if (low === 'c4container') return 'C4Container';
-    if (low === 'c4component') return 'C4Component';
-    if (low === 'c4dynamic') return 'C4Dynamic';
-    if (low === 'c4deployment') return 'C4Deployment';
-    if (low === 'journey') return 'journey';
-    if (low === 'gantt') return 'gantt';
-    if (low === 'pie') return 'pie';
-    if (low === 'mindmap') return 'mindmap';
-    if (low === 'timeline') return 'timeline';
-    return first;
+    return DIAGRAM_TYPE_MAP_[low] || first;
 }
 
 function detectCodeDiagramTypeKeyword_(code) {
@@ -775,5 +779,8 @@ function escapeFlowLabel_(label) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { decodeHtmlEntities_ };
+    module.exports = {
+        decodeHtmlEntities_,
+        normalizeDiagramTypeKeyword_
+    };
 }
