@@ -781,5 +781,10 @@ function escapeFlowLabel_(label) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { decodeHtmlEntities_, extractMermaidDiagram_ };
+    module.exports = {
+        decodeHtmlEntities_,
+        extractMermaidDiagram_,
+        normalizeDiagramTypeKeyword_,
+        buildRetryHistoryContext_
+    };
 }

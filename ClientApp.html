@@ -371,27 +371,17 @@
     if (!f || !t) return -1;
 
     const targetLabel = normalizeFlowchartEdgeLabel(previousLabel);
-    const matches = [];
+    let firstMatchIndex = -1;
+
     for (let i = 0; i < lines.length; i++) {
       const parsed = parseFlowchartEdgeLine(lines[i]);
-      if (!parsed) continue;
-      if (parsed.from === f && parsed.to === t) {
-        matches.push({ index: i, parsed });
+      if (parsed && parsed.from === f && parsed.to === t) {
+        if (targetLabel && parsed.label === targetLabel) return i;
+        if (!targetLabel && !parsed.label) return i;
+        if (firstMatchIndex === -1) firstMatchIndex = i;
       }
     }
-    if (!matches.length) return -1;
-    if (targetLabel) {
-      for (let i = 0; i < matches.length; i++) {
-        if (matches[i].parsed.label === targetLabel) return matches[i].index;
-      }
-    }
-    if (matches.length === 1) return matches[0].index;
-    if (!targetLabel) {
-      for (let i = 0; i < matches.length; i++) {
-        if (!matches[i].parsed.label) return matches[i].index;
-      }
-    }
-    return matches[0].index;
+    return firstMatchIndex;
   }
   function upsertFlowchartEdge(code, from, to, label, previousLabel) {
     const f = String(from || "").trim();
